@@ -7615,6 +7615,160 @@ window.App.Runtime = (function () {
   });
 })();
 
+/* ============================================================================
+   App.Boot — Phase 0.2 of the incremental modularization plan v3.
+
+   Coordination infrastructure for boot phases. Provides:
+     - register(name, opts) — declare a named boot phase
+     - run() — execute all PENDING phases in registration order, awaiting
+       each before the next (sequential, deterministic)
+     - status(name?) — query a single phase status or a snapshot of all
+     - STATUS — frozen enum (pending / running / done / failed / skipped)
+
+   DESIGN RULES (non-negotiable, same as Phase 0.1):
+   - Pure infrastructure. No consumer is wired here. No legacy setTimeout
+     is wrapped. No existing boot phase is auto-registered. App.Boot is
+     just the contract — phases get registered by future phases of the
+     plan, never inside this file in 0.2.
+   - Boot depends on Runtime (uses App.Runtime.setTimeout for delay
+     scheduling — so delayed phases are tracked + cancellable). Runtime
+     never depends on Boot. No inverse coupling.
+   - Phase fn() may be sync OR return a thenable — both are awaited.
+   - Errors in a phase fn() are caught + logged, never thrown to the caller.
+     The phase is marked FAILED but run() continues to the next phase.
+   - Missing dep or non-DONE dep at moment of execution → phase SKIPPED
+     (status reflects the reason via .error). No topological sort yet —
+     phases run in registration order, so the caller is responsible for
+     declaring phases in a dep-respecting order in 0.2. Topo sort can be
+     added later without breaking this API.
+   - Object.freeze on the public API. Phases stored in a private Map.
+   - No async/await syntax (matches the style of App.Runtime); explicit
+     Promise chaining throughout.
+
+   This block is ADDITIVE only. Nothing in the existing boot path uses
+   App.Boot in 0.2. Migration of real phases happens in 0.3+, never in 0.2.
+   ============================================================================ */
+window.App = window.App || {};
+
+window.App.Boot = (function () {
+  var STATUS = Object.freeze({
+    PENDING: 'pending',
+    RUNNING: 'running',
+    DONE: 'done',
+    FAILED: 'failed',
+    SKIPPED: 'skipped',
+  });
+
+  var phases = new Map();
+
+  function register(name, opts) {
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new Error('[Boot] register: name must be a non-empty string');
+    }
+    if (phases.has(name)) {
+      throw new Error('[Boot] register: phase "' + name + '" already registered');
+    }
+    opts = opts || {};
+    if (typeof opts.fn !== 'function') {
+      throw new Error('[Boot] register: opts.fn must be a function');
+    }
+    var deps = Array.isArray(opts.deps) ? opts.deps.slice() : [];
+    var delay = (typeof opts.delay === 'number' && opts.delay > 0) ? opts.delay : 0;
+    phases.set(name, {
+      name: name,
+      fn: opts.fn,
+      deps: deps,
+      delay: delay,
+      status: STATUS.PENDING,
+      error: null,
+    });
+  }
+
+  function status(name) {
+    if (typeof name === 'undefined') {
+      var snap = {};
+      phases.forEach(function (p, n) { snap[n] = p.status; });
+      return snap;
+    }
+    var p = phases.get(name);
+    return p ? p.status : null;
+  }
+
+  function _runPhase(phase) {
+    // Dep gate — checked at the moment of execution, not at registration.
+    // A missing dep, or a dep whose status is not DONE, marks this phase
+    // SKIPPED and resolves immediately. The next phase still gets its turn.
+    for (var i = 0; i < phase.deps.length; i++) {
+      var depName = phase.deps[i];
+      var dep = phases.get(depName);
+      if (!dep || dep.status !== STATUS.DONE) {
+        phase.status = STATUS.SKIPPED;
+        phase.error = new Error('[Boot] phase "' + phase.name + '" skipped — dep "' + depName + '" ' + (dep ? 'status=' + dep.status : 'not registered'));
+        return Promise.resolve();
+      }
+    }
+    return new Promise(function (resolve) {
+      var go = function () {
+        phase.status = STATUS.RUNNING;
+        var result;
+        try {
+          result = phase.fn();
+        } catch (err) {
+          phase.status = STATUS.FAILED;
+          phase.error = err;
+          console.error('[Boot] phase "' + phase.name + '" threw:', err);
+          return resolve();
+        }
+        // Phase.fn may return a thenable — wait for it. Sync return → already a resolved Promise.
+        Promise.resolve(result).then(
+          function () { phase.status = STATUS.DONE; resolve(); },
+          function (err) {
+            phase.status = STATUS.FAILED;
+            phase.error = err;
+            console.error('[Boot] phase "' + phase.name + '" rejected:', err);
+            resolve();
+          }
+        );
+      };
+      if (phase.delay > 0) {
+        // Delayed phases use Runtime.setTimeout so they're tracked + cancellable
+        // via App.Runtime.dispose() — Boot deliberately does not own its own
+        // timer registry. This keeps the dependency direction Boot → Runtime.
+        App.Runtime.setTimeout(go, phase.delay);
+      } else {
+        go();
+      }
+    });
+  }
+
+  function run() {
+    // Snapshot the PENDING set at call time. Phases registered after run()
+    // starts but before it finishes are NOT picked up in this run — they wait
+    // for the next run() call. This makes run() deterministic and re-entrant.
+    var queue = [];
+    phases.forEach(function (p) { if (p.status === STATUS.PENDING) queue.push(p); });
+    return queue.reduce(function (chain, p) {
+      return chain.then(function () { return _runPhase(p); });
+    }, Promise.resolve());
+  }
+
+  // Test affordance — clear the registry. Underscore-prefixed and intentionally
+  // exposed (matching Runtime's `_global` / `_state`) so smoke tests can run
+  // hermetically without page reload. Never call in product code.
+  function _reset() {
+    phases.clear();
+  }
+
+  return Object.freeze({
+    register: register,
+    run: run,
+    status: status,
+    STATUS: STATUS,
+    _phases: phases,
+    _reset: _reset,
+  });
+})();
+
 /* ============================
    GLOBAL ERROR LOGGERS — surface boot-time errors instead of silently failing
    ============================ */
