@@ -7695,6 +7695,16 @@ window.App.Boot = (function () {
   }
 
   function _runPhase(phase) {
+    // Status gate — if a concurrent run() (or a re-entry from a phase fn
+    // itself) has already picked this phase up, we're a duplicate caller.
+    // Return immediately so phase.fn() is invoked at most once across all
+    // overlapping run() invocations. Without this, two synchronous run()
+    // calls would each enqueue every PENDING phase, observed in smoke
+    // testing as `fn called 2x` on async phases. This gate keeps Phase 6
+    // retry / realtime loops safe from accidental double-execution.
+    if (phase.status !== STATUS.PENDING) {
+      return Promise.resolve();
+    }
     // Dep gate — checked at the moment of execution, not at registration.
     // A missing dep, or a dep whose status is not DONE, marks this phase
     // SKIPPED and resolves immediately. The next phase still gets its turn.
@@ -7752,13 +7762,31 @@ window.App.Boot = (function () {
     }, Promise.resolve());
   }
 
-  // Test affordance — clear the registry. Underscore-prefixed and intentionally
-  // exposed (matching Runtime's `_global` / `_state`) so smoke tests can run
-  // hermetically without page reload. Never call in product code.
+  // Test / debug affordance — clear the registry. Underscore-prefixed and
+  // intentionally exposed (matching Runtime's `_global` / `_state`) so smoke
+  // tests can run hermetically without page reload, and so DevTools can poke
+  // at state during development. NEVER call from product code; future modules
+  // that need to clear the registry should ship their own API rather than
+  // reaching for `_reset`. The leading underscore is the only enforcement.
   function _reset() {
     phases.clear();
   }
 
+  // --- INTERNAL SURFACE CONTRACT (verrouillé Phase 0.2) ---
+  // `_phases` and `_reset` are exposed for DevTools inspection and smoke tests.
+  //
+  //   _phases  — the live Map. MUTABLE BY DESIGN. The leading underscore is
+  //              the contract: "don't touch from product code, but tests and
+  //              DevTools can reach in." We deliberately keep it as a real Map
+  //              (not a snapshot copy) so smoke tests can observe live state
+  //              transitions cheaply. A readonly snapshot getter can be added
+  //              later if a real consumer ever needs to enumerate phases —
+  //              until then, leaving it raw is cheaper than wrapping.
+  //   _reset   — test-only. Same underscore convention.
+  //
+  // The outer Object.freeze() prevents replacing either reference; it does
+  // NOT prevent mutating the Map's contents through `_phases`. Treat that as
+  // a debug-only escape hatch — it's NOT part of the public API.
   return Object.freeze({
     register: register,
     run: run,
