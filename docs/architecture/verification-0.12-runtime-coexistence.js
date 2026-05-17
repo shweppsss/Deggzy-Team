@@ -257,6 +257,21 @@ function extractGlobalEscAsNamedFn() {
 const globalEscNamedFn = extractGlobalEscAsNamedFn();
 sources.push(globalEscNamedFn);
 
+// 0.19 — same trick for the outside-click delegate at L17767.
+function extractGlobalOutsideClickAsNamedFn() {
+  const marker = '// Click outside modal to close';
+  const start = html.indexOf(marker);
+  if (start < 0) throw new Error('Outside-click delegate marker not found');
+  const after = html.slice(start);
+  const end = after.indexOf('\n});\n');
+  if (end < 0) throw new Error('Outside-click delegate closing not found');
+  let block = after.slice(0, end + 2);
+  block = block.replace("document.addEventListener('click', (e) => {", 'function _globalModalOutsideClickFn(e) {');
+  return block + '\n';
+}
+const globalOutsideClickNamedFn = extractGlobalOutsideClickAsNamedFn();
+sources.push(globalOutsideClickNamedFn);
+
 // Account menu uses `const` and `let` in its body, but the functions
 // themselves are plain. We also need to declare `_weekDrag` as a global
 // because the calendar fns expect it as a module-level binding.
@@ -302,6 +317,7 @@ const harness = `
     closeRoleModal,
     closeInspiModal,
     _globalEscRoutingFn,
+    _globalModalOutsideClickFn,
   };
   globalThis.__getWeekDrag = function() { return _weekDrag; };
   globalThis.__getWeekResize = function() { return _weekResize; };
@@ -678,6 +694,15 @@ function uninstallGlobalEsc() {
   document.removeEventListener('keydown', F._globalEscRoutingFn);
 }
 
+// 0.19 — outside-click delegate (covers eventModal + inspiModal only;
+// roleModal uses a separate inline backdrop handler)
+function installGlobalOutsideClick() {
+  document.addEventListener('click', F._globalModalOutsideClickFn);
+}
+function uninstallGlobalOutsideClick() {
+  document.removeEventListener('click', F._globalModalOutsideClickFn);
+}
+
 // ---------------------------------------------------------------------------
 // SCENARIO 10 — Open detail → open menu → close menu
 //   Invariant: closing the menu does NOT restore body.style.overflow.
@@ -942,6 +967,85 @@ tr('SC18c.a contentEditable element blurred', focusedCE._blurred === true);
 tr('SC18c.b inspiModal STILL open', inspiModalEl._state.open === true);
 uninstallGlobalEsc();
 inspiModalEl.classList.remove('open');
+
+// ===========================================================================
+// 0.19 — Outside-click delegate (eventModal + inspiModal)
+//
+// The L17767 document-click delegate routes a click whose target.id is
+// 'eventModal' or 'inspiModal' to the corresponding close fn. This is the
+// backdrop-click-to-close pattern for those 2 modals. roleModal uses an
+// inline backdrop handler instead (different mechanism, not covered here).
+//
+// SC19/SC20 pin the contract: clicking outside the modal content (i.e.
+// directly on the backdrop element whose id matches) closes the modal.
+// Clicking inside the content (different target id) does not.
+// ===========================================================================
+
+// Helper: fire a document click whose e.target has a specific id
+function fireDocClickOnId(id) {
+  const list = docListeners.click.slice();
+  const target = { id, closest() { return null; } };
+  list.forEach(l => {
+    l.fn({ target });
+    if (l.once) {
+      const idx = docListeners.click.indexOf(l);
+      if (idx >= 0) docListeners.click.splice(idx, 1);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// SCENARIO 19 — eventModal × outside-click via delegate
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 19 — eventModal × backdrop click ===');
+resetState();
+installGlobalOutsideClick();
+eventModalEl.classList.add('open');
+eq('SC19.a setup', { open: eventModalEl._state.open, listeners: listenerCounts() },
+   { open: true, listeners: { click: 1, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 } });
+
+// Click INSIDE the modal (target id is some child) → should NOT close
+fireDocClickOnId('some-child-of-modal');
+tr('SC19.b click inside modal does NOT close (target id mismatch)', eventModalEl._state.open === true);
+
+// Click ON the backdrop (target id === 'eventModal') → closes
+fireDocClickOnId('eventModal');
+tr('SC19.c backdrop click closes eventModal', eventModalEl._state.open === false);
+uninstallGlobalOutsideClick();
+
+// ---------------------------------------------------------------------------
+// SCENARIO 20 — inspiModal × outside-click via delegate
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 20 — inspiModal × backdrop click ===');
+resetState();
+installGlobalOutsideClick();
+inspiModalEl.classList.add('open');
+eq('SC20.a setup', { open: inspiModalEl._state.open, listeners: listenerCounts() },
+   { open: true, listeners: { click: 1, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 } });
+
+// Click inside → NOT close
+fireDocClickOnId('some-child');
+tr('SC20.b inside click does NOT close', inspiModalEl._state.open === true);
+
+// Backdrop click → closes
+fireDocClickOnId('inspiModal');
+tr('SC20.c backdrop click closes inspiModal', inspiModalEl._state.open === false);
+uninstallGlobalOutsideClick();
+
+// ---------------------------------------------------------------------------
+// SCENARIO 21 — Delegate does NOT route to roleModal
+//   (roleModal uses a separate inline backdrop handler at L7231; the
+//   delegate has no branch for it. Verifying explicitly to prevent
+//   future "homogenization" refactors that would silently break.)
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 21 — delegate has NO route for roleModal ===');
+resetState();
+installGlobalOutsideClick();
+roleModalEl.classList.add('open');
+fireDocClickOnId('roleModal');
+tr('SC21.a clicking with id=roleModal via the delegate does NOT close roleModal (different mechanism)', roleModalEl._state.open === true);
+uninstallGlobalOutsideClick();
+roleModalEl.classList.remove('open');
 
 // ---------------------------------------------------------------------------
 // SUMMARY
