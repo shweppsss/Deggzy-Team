@@ -6419,7 +6419,7 @@
         <label>Mot de passe</label>
         <div class="auth-password-wrap">
           <input id="signInPassword" type="password" required autocomplete="current-password" minlength="6" placeholder="••••••••" />
-          <button type="button" class="auth-password-toggle" aria-label="Afficher / masquer le mot de passe" onclick="toggleAuthPassword('signInPassword', this)">Afficher</button>
+          <button type="button" class="auth-password-toggle" aria-label="Afficher / masquer le mot de passe" data-toggle-target="signInPassword">Afficher</button>
         </div>
       </div>
       <button type="submit" class="auth-submit" id="signInButton">Se connecter</button>
@@ -6478,14 +6478,14 @@
             <label>Mot de passe <span class="auth-field-optional">6 caractères min.</span></label>
             <div class="auth-password-wrap">
               <input id="signUpPassword" type="password" required autocomplete="new-password" minlength="6" />
-              <button type="button" class="auth-password-toggle" aria-label="Afficher / masquer le mot de passe" onclick="toggleAuthPassword('signUpPassword', this)">Afficher</button>
+              <button type="button" class="auth-password-toggle" aria-label="Afficher / masquer le mot de passe" data-toggle-target="signUpPassword">Afficher</button>
             </div>
           </div>
           <div class="auth-field">
             <label>Confirmation</label>
             <div class="auth-password-wrap">
               <input id="signUpPasswordConfirm" type="password" required autocomplete="new-password" minlength="6" />
-              <button type="button" class="auth-password-toggle" aria-label="Afficher / masquer la confirmation" onclick="toggleAuthPassword('signUpPasswordConfirm', this)">Afficher</button>
+              <button type="button" class="auth-password-toggle" aria-label="Afficher / masquer la confirmation" data-toggle-target="signUpPasswordConfirm">Afficher</button>
             </div>
           </div>
         </div>
@@ -10719,6 +10719,11 @@ function saveSetup(ev) {
 }
 
 function showAuthView(viewId) {
+  // Phase 0.5 — wire the password-toggle buttons on every auth view transition.
+  // The function is idempotent (skips already-bound buttons via data-toggle-bound),
+  // so calling it here is cheap and guarantees the buttons work the first time
+  // the user lands on signIn / signUp, regardless of which view they came from.
+  if (typeof bindAuthPasswordToggles === 'function') bindAuthPasswordToggles();
   ['authSetupView','authSignInView','authSignUpView','authPinSetupView','authPinEntryView','authForgotView','authResetView'].forEach(v => {
     const el = document.getElementById(v);
     if (el) el.style.display = (v === viewId) ? (v === 'authSetupView' ? 'block' : 'flex') : 'none';
@@ -10737,8 +10742,69 @@ function showSetup() { showAuthView('authSetupView'); }
 /* Renders the invitation-only state on the signup form based on the cached
    auth/v1/settings response. When signup is disabled, the banner is shown
    and the multi-step form is visually de-emphasized + non-interactive. */
+/* =============================================================================
+   Auth password toggle — Phase 0.5 micro-migration
+
+   Replaces the 3 inline `onclick="toggleAuthPassword(...)"` attributes that
+   used to live on the show/hide buttons (signIn / signUp / signUpConfirm).
+   The buttons now declare their target via `data-toggle-target="<inputId>"`
+   and this binder wires a real `click` listener.
+
+   This is a deliberately tiny migration (Phase 0.5 brief, scope strictly
+   limited to `toggleAuthPassword`). It is NOT:
+     - a delegation framework
+     - a generic handler binder
+     - an inline-handler-migration engine
+     - a state abstraction
+   It is ONLY a binder for this one feature, scoped to a single CSS class,
+   designed to validate the migration method on a feature small enough that
+   a regression is trivially detectable.
+
+   IDEMPOTENCE: each button is marked `data-toggle-bound="1"` after the
+   first wiring. Re-calling `bindAuthPasswordToggles()` is a no-op for any
+   already-bound button. This matters because the binder runs every time
+   `showAuthView()` is called (each transition between auth screens), and
+   the same DOM buttons exist across transitions.
+
+   LEGACY COMPAT: the original `toggleAuthPassword(inputId, btn)` function
+   is kept below for now — if any code path still calls it programmatically
+   (none in the file today, verified by grep), it works unchanged. A future
+   phase may delete it; this PR does not.
+
+   NO AUTO-RUN AT LOAD: the binder runs explicitly from `showAuthView()`,
+   not from the module top level. No IIFE wraps this code.
+   ============================================================================ */
+function bindAuthPasswordToggles() {
+  // Defensive: if App.Runtime helpers aren't available for any reason
+  // (script-evaluation race, future test harness), fall back to native
+  // DOM APIs. Behavior is identical either way.
+  var R = (typeof window !== 'undefined' && window.App && window.App.Runtime) || null;
+  var buttons = R
+    ? R.qsa('button.auth-password-toggle[data-toggle-target]')
+    : Array.from(document.querySelectorAll('button.auth-password-toggle[data-toggle-target]'));
+  buttons.forEach(function (btn) {
+    if (btn.dataset.toggleBound === '1') return; // idempotent
+    var inputId = btn.dataset.toggleTarget;
+    if (!inputId) return;
+    btn.addEventListener('click', function (ev) {
+      // Same logic as the legacy toggleAuthPassword(inputId, btn) — kept
+      // strictly behavior-equivalent. Do not "improve" without an explicit
+      // brief; this is a method-validation migration, not a UX change.
+      var input = R ? R.byId(inputId) : document.getElementById(inputId);
+      if (!input) return;
+      var showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      btn.textContent = showing ? 'Afficher' : 'Masquer';
+    });
+    btn.dataset.toggleBound = '1';
+  });
+}
+
 /* Toggle a password input's visibility. Pure DOM, no state — the button text
-   itself doubles as the indicator. Works on any input id passed in. */
+   itself doubles as the indicator. Works on any input id passed in.
+   LEGACY (Phase 0.5): no longer called from inline handlers (those were
+   migrated to bindAuthPasswordToggles). Kept for backward compatibility
+   with any programmatic caller — verified via grep, none exist today. */
 function toggleAuthPassword(inputId, btn) {
   const input = document.getElementById(inputId);
   if (!input || !btn) return;
