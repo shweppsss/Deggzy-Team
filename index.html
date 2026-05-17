@@ -6617,15 +6617,15 @@
       </div>
 
       <div class="pin-keypad" role="group" aria-label="Pavé numérique">
-        <button type="button" class="pin-key" onclick="pinKeyPress('1')"><span class="pin-key-num">1</span><span class="pin-key-letters">&nbsp;</span></button>
-        <button type="button" class="pin-key" onclick="pinKeyPress('2')"><span class="pin-key-num">2</span><span class="pin-key-letters">ABC</span></button>
-        <button type="button" class="pin-key" onclick="pinKeyPress('3')"><span class="pin-key-num">3</span><span class="pin-key-letters">DEF</span></button>
-        <button type="button" class="pin-key" onclick="pinKeyPress('4')"><span class="pin-key-num">4</span><span class="pin-key-letters">GHI</span></button>
-        <button type="button" class="pin-key" onclick="pinKeyPress('5')"><span class="pin-key-num">5</span><span class="pin-key-letters">JKL</span></button>
-        <button type="button" class="pin-key" onclick="pinKeyPress('6')"><span class="pin-key-num">6</span><span class="pin-key-letters">MNO</span></button>
-        <button type="button" class="pin-key" onclick="pinKeyPress('7')"><span class="pin-key-num">7</span><span class="pin-key-letters">PQRS</span></button>
-        <button type="button" class="pin-key" onclick="pinKeyPress('8')"><span class="pin-key-num">8</span><span class="pin-key-letters">TUV</span></button>
-        <button type="button" class="pin-key" onclick="pinKeyPress('9')"><span class="pin-key-num">9</span><span class="pin-key-letters">WXYZ</span></button>
+        <button type="button" class="pin-key" data-pin-digit="1"><span class="pin-key-num">1</span><span class="pin-key-letters">&nbsp;</span></button>
+        <button type="button" class="pin-key" data-pin-digit="2"><span class="pin-key-num">2</span><span class="pin-key-letters">ABC</span></button>
+        <button type="button" class="pin-key" data-pin-digit="3"><span class="pin-key-num">3</span><span class="pin-key-letters">DEF</span></button>
+        <button type="button" class="pin-key" data-pin-digit="4"><span class="pin-key-num">4</span><span class="pin-key-letters">GHI</span></button>
+        <button type="button" class="pin-key" data-pin-digit="5"><span class="pin-key-num">5</span><span class="pin-key-letters">JKL</span></button>
+        <button type="button" class="pin-key" data-pin-digit="6"><span class="pin-key-num">6</span><span class="pin-key-letters">MNO</span></button>
+        <button type="button" class="pin-key" data-pin-digit="7"><span class="pin-key-num">7</span><span class="pin-key-letters">PQRS</span></button>
+        <button type="button" class="pin-key" data-pin-digit="8"><span class="pin-key-num">8</span><span class="pin-key-letters">TUV</span></button>
+        <button type="button" class="pin-key" data-pin-digit="9"><span class="pin-key-num">9</span><span class="pin-key-letters">WXYZ</span></button>
         <button type="button" class="pin-key pin-key-aux pin-key-faceid" id="pinFaceIdBtn" onclick="pinTryFaceId()" aria-label="Déverrouiller avec Face ID" hidden>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/>
@@ -6635,7 +6635,7 @@
             <path d="M9 16c1 1 2 1.5 3 1.5s2-.5 3-1.5"/>
           </svg>
         </button>
-        <button type="button" class="pin-key" onclick="pinKeyPress('0')"><span class="pin-key-num">0</span><span class="pin-key-letters">&nbsp;</span></button>
+        <button type="button" class="pin-key" data-pin-digit="0"><span class="pin-key-num">0</span><span class="pin-key-letters">&nbsp;</span></button>
         <button type="button" class="pin-key pin-key-aux pin-key-delete" id="pinDeleteBtn" onclick="pinDelete()" aria-label="Effacer">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 5H8.5a2 2 0 0 0-1.6.8L2 12l4.9 6.2a2 2 0 0 0 1.6.8H21a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Z"/>
@@ -10378,6 +10378,26 @@ function updatePinDots() {
   });
 }
 
+// 0.17b — bind the 10 pin keypad digit buttons via `data-pin-digit` instead
+// of inline `onclick="pinKeyPress('N')"`. Idempotent via data-pin-bound.
+// pinKeyPress remains callable (the physical-keyboard handler at L10648
+// also calls it directly), so no behavior change.
+function bindPinKeypad() {
+  var R = (typeof window !== 'undefined' && window.App && window.App.Runtime) || null;
+  var buttons = R
+    ? R.qsa('button[data-pin-digit]')
+    : Array.from(document.querySelectorAll('button[data-pin-digit]'));
+  buttons.forEach(function (btn) {
+    if (btn.dataset.pinBound === '1') return; // idempotent
+    var digit = btn.dataset.pinDigit;
+    if (!/^[0-9]$/.test(digit)) return; // defensive: only single digits
+    btn.addEventListener('click', function () {
+      if (typeof pinKeyPress === 'function') pinKeyPress(digit);
+    });
+    btn.dataset.pinBound = '1';
+  });
+}
+
 function pinKeyPress(digit) {
   if (_pinLocked) return;
   if (_pinBuffer.length >= 4) return;
@@ -11060,6 +11080,8 @@ function showPinEntry() {
   const avatarEl = document.getElementById('authPinEntryAvatar');
   if (nameEl) nameEl.textContent = name;
   if (avatarEl) avatarEl.textContent = (name[0] || '?').toUpperCase();
+  // 0.17b — wire the 10 digit buttons. Idempotent; safe to call on every entry.
+  if (typeof bindPinKeypad === 'function') bindPinKeypad();
   // Reset the buffer for the new keypad entry flow
   _pinBuffer = '';
   _pinLocked = false;
