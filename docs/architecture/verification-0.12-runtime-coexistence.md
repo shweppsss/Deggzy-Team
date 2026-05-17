@@ -28,6 +28,7 @@ History:
 - 0.13 T2: 54/54 PASS (added week resize + cal-grid drag flows)
 - 0.14: 70/74 PASS — surfaced a real defect (ESC didn't close detailOverlay due to a `detailPane` / `detailOverlay` id mismatch at L17766)
 - 0.15: 74/74 PASS — defect fixed (1-word typo correction + removed unused `getComputedStyle` check)
+- 0.16: 80/80 PASS — added SC14/15/16: each of eventModal / inspiModal / roleModal closes correctly on ESC (converts the 0.13 T4 trust into a runtime invariant)
 
 ```
 === SANITY ===                                          (5/5)
@@ -44,6 +45,9 @@ History:
 === SCENARIO 11 — detail × menu × T1 exception ===     (6/6)  [added 0.14]
 === SCENARIO 12 — detail × ESC ===                     (4/4)  [added 0.14, fixed by 0.15]
 === SCENARIO 13 — detail × menu × ESC ===              (5/5)  [added 0.14, fixed by 0.15]
+=== SCENARIO 14 — eventModal × ESC ===                 (2/2)  [added 0.16]
+=== SCENARIO 15 — inspiModal × ESC ===                 (2/2)  [added 0.16]
+=== SCENARIO 16 — roleModal × ESC ===                  (2/2)  [added 0.16]
 ```
 
 Listener attach/detach operations logged across the run. Final listener count after every scenario is exactly **zero** (or 1 for SC13.e, which leaves the global ESC handler attached — that's architecturally always-on in the real product).
