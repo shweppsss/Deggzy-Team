@@ -9957,14 +9957,23 @@ function _renderOnboardingSkills() {
   const skills = _onboardingState ? _onboardingState.skills : [];
   if (!skills.length) {
     container.innerHTML = '';
-    return;
+  } else {
+    // Phase 0.7 — chips render with `data-skill-remove-index` (no inline handler).
+    // The freshly-built × buttons are wired by bindOnboardingSkillRemove() below.
+    // Each re-render destroys the prior chips (innerHTML replacement → old DOM
+    // nodes garbage-collected with their listeners), so we never leak handlers.
+    container.innerHTML = skills.map((s, i) => `
+      <span class="profile-chip">
+        ${escapeHtml(s)}
+        <button type="button" data-skill-remove-index="${i}" aria-label="Retirer ${escapeHtml(s)}">×</button>
+      </span>
+    `).join('');
   }
-  container.innerHTML = skills.map((s, i) => `
-    <span class="profile-chip">
-      ${escapeHtml(s)}
-      <button type="button" onclick="onboardingRemoveSkill(${i})" aria-label="Retirer ${escapeHtml(s)}">×</button>
-    </span>
-  `).join('');
+  // Phase 0.7 — bind freshly-rendered remove buttons. Idempotent (already-bound
+  // buttons are skipped), safe on empty list (qsa returns 0 matches). This is
+  // the NATURAL mount point for the chip handlers — bind happens exactly when
+  // the chips appear, no global DOM scan, no showAuthView() coupling.
+  if (typeof bindOnboardingSkillRemove === 'function') bindOnboardingSkillRemove();
 }
 function onboardingAddSkill() {
   const input = document.getElementById('signUpSkillInput');
@@ -10745,6 +10754,61 @@ function showSetup() { showAuthView('authSetupView'); }
 /* Renders the invitation-only state on the signup form based on the cached
    auth/v1/settings response. When signup is disabled, the banner is shown
    and the multi-step form is visually de-emphasized + non-interactive. */
+/* =============================================================================
+   Onboarding skill remove — Phase 0.7 micro-migration
+
+   Replaces the 1 inline `onclick="onboardingRemoveSkill(${i})"` attribute that
+   lived inside a TEMPLATE STRING re-rendered by `_renderOnboardingSkills()`
+   every time the skills list changes. This is the first migration where the
+   handler runs on DYNAMICALLY CREATED DOM nodes — chips are not in the static
+   HTML, they're built at runtime per user action.
+
+   WHY A THIRD SEPARATE BINDER (and not a generic `bindByAction()` thing): GPT
+   review notes from 0.5 and 0.6 explicitly warned that the `data-*-bound`
+   pattern must NOT drift into a generic handler registry / action dispatcher.
+   So Phase 0.7 adds a THIRD named, feature-scoped binder. Three binders,
+   three named features. The repetition is deliberate — controlled repetition
+   is cheaper than premature abstraction at this stage of the plan.
+
+   DYNAMIC RE-RENDER STORY:
+     - Each chip carries `data-skill-remove-index="<n>"` (its position in
+       `_onboardingState.skills`).
+     - `_renderOnboardingSkills()` calls `bindOnboardingSkillRemove()` after
+       writing the new innerHTML — bind point is the renderer itself, NOT
+       `showAuthView()` (per GPT 0.6 note: avoid the showAuthView "universal
+       rebinding hub" drift).
+     - Old chips are wiped via `innerHTML = '...'` — their listeners die with
+       the GC'd DOM nodes. No leak. Fresh chips start with no bound flag.
+     - The binder's idempotence check (`data-skill-remove-bound="1"`) protects
+       the steady-state case where the renderer runs but the chip set is
+       unchanged (e.g. a no-op re-render).
+     - The closure captures the parsed integer index AT BIND TIME, so each
+       button is permanently associated with a fixed numeric index. After a
+       remove, the renderer rebuilds chips with fresh indices, fresh buttons,
+       fresh closures — no stale index drift.
+
+   LEGACY COMPAT: `onboardingRemoveSkill(i)` is kept defined intact. No other
+   call site in the file uses it programmatically today (verified by grep),
+   but the function-name surface remains stable for any future caller.
+   ============================================================================ */
+function bindOnboardingSkillRemove() {
+  var R = (typeof window !== 'undefined' && window.App && window.App.Runtime) || null;
+  var buttons = R
+    ? R.qsa('button[data-skill-remove-index]')
+    : Array.from(document.querySelectorAll('button[data-skill-remove-index]'));
+  buttons.forEach(function (btn) {
+    if (btn.dataset.skillRemoveBound === '1') return; // idempotent
+    var idx = parseInt(btn.dataset.skillRemoveIndex, 10);
+    if (!Number.isFinite(idx) || idx < 0) return; // defensive: bad/missing index skipped
+    btn.addEventListener('click', function () {
+      // Closure captures idx parsed at bind time — never re-reads the attr,
+      // so attribute mutations after bind don't change behavior.
+      if (typeof onboardingRemoveSkill === 'function') onboardingRemoveSkill(idx);
+    });
+    btn.dataset.skillRemoveBound = '1';
+  });
+}
+
 /* =============================================================================
    Onboarding nav — Phase 0.6 micro-migration
 
