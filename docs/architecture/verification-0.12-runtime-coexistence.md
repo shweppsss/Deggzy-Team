@@ -33,6 +33,7 @@ History:
 - 0.19: 96/96 PASS — added SC19/20/21: outside-click delegate at L17767 routes eventModal/inspiModal backdrop clicks, but NOT roleModal (which uses a separate inline mechanism). Verified explicitly so a future homogenization refactor doesn't silently break either path.
 - 0.20: 106/106 PASS — added SC22/23/24: physical-keyboard PIN handler at L10664. Pins the **offsetParent gate** (the documented critical fix that prevented the prior Backspace-swallow-globally bug). If anyone reverts to the wrong check (e.g. `style.display === 'none'`), SC23 fails and catches it.
 - 0.21: 124/124 PASS — added SC25/26/27/28: interaction-interruption class. Pins cross-state behavior for (25) double openDetail idempotence, (26) menu+detail simultaneous close on single ESC, (27) drag listeners NOT leaking when detail opens mid-drag, (28) ESC routing-order contract (modal closes BEFORE detail; takes 2 ESCs to close both). The last is the most important — it pins the close-order, which a future refactor could silently invert.
+- 0.22: 149/149 PASS — added SC29/30/31/32: repetition stress (listener integrity under intensive cycling). SC29 menu open/close ×100, SC30 detailOverlay open/close ×100, SC31 modal ESC cycles ×100 each (×3 modals), SC32 mixed sequence ×25 across all subsystems. Detects silent accumulation that single-pass scenarios miss. 302 attach/detach operations logged across this run alone, 0 cumulative drift.
 
 ```
 === SANITY ===                                          (5/5)
@@ -66,6 +67,10 @@ History:
 === SCENARIO 26 — menu × detail × ESC ===              (5/5)  [added 0.21]
 === SCENARIO 27 — drag × openDetail × cleanup ===      (4/4)  [added 0.21]
 === SCENARIO 28 — modal × detail × ESC order ===       (3/3)  [added 0.21]
+=== SCENARIO 29 — menu open/close ×100 ===             (4/4)  [added 0.22]
+=== SCENARIO 30 — detailOverlay open/close ×100 ===    (6/6)  [added 0.22]
+=== SCENARIO 31 — modal ESC cycles ×100 each ×3 ===    (6/6)  [added 0.22]
+=== SCENARIO 32 — mixed sequence stress ×25 ===        (9/9)  [added 0.22]
 ```
 
 Listener attach/detach operations logged across the run. Final listener count after every scenario is exactly **zero** (or 1 for SC13.e, which leaves the global ESC handler attached — that's architecturally always-on in the real product).

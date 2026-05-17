@@ -1319,6 +1319,159 @@ eq('SC28.c 2nd ESC: detail closed, overflow restored',
    { event: false, detail: false, overflow: '' });
 uninstallGlobalEsc();
 
+// ===========================================================================
+// 0.22 — Repetition stress (listener integrity under intensive cycling)
+//
+// Detects silent accumulation that single-pass scenarios miss: a single
+// extra add/remove pair per cycle is invisible at N=1, lethal at N=100.
+// Each scenario tracks listener counts cycle-by-cycle to verify the
+// counts NEVER drift above expected MAX, and return to exactly 0 at the
+// end.
+// ===========================================================================
+
+// Helper: returns true if any listener count is non-zero at this moment.
+function anyDocListener() {
+  const c = listenerCounts();
+  return c.click + c.keydown + c.pointermove + c.pointerup + c.pointercancel > 0;
+}
+
+// ---------------------------------------------------------------------------
+// SC29 — Account menu open/close ×100 via outside-click
+//   For each cycle: open via clickChip, close via outside click. Track the
+//   max simultaneous listeners and the final count.
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 29 — account menu open/close ×100 ===');
+resetState();
+let maxClick = 0, maxKeydown = 0;
+const outsideTarget = { closest() { return null; } };
+for (let i = 0; i < 100; i++) {
+  clickChip();  // open
+  const c1 = listenerCounts();
+  if (c1.click > maxClick) maxClick = c1.click;
+  if (c1.keydown > maxKeydown) maxKeydown = c1.keydown;
+  fireDocClick(outsideTarget);  // close via outside click
+}
+eq('SC29.a max simultaneous click listeners across 100 cycles', maxClick, 1);
+eq('SC29.b max simultaneous keydown listeners across 100 cycles', maxKeydown, 1);
+eq('SC29.c after 100 open/close cycles: all listeners back to 0', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+tr('SC29.d menu in final closed state', menuEl.hidden === true);
+
+// ---------------------------------------------------------------------------
+// SC30 — detailOverlay open/close ×100
+//   Verifies body.overflow is restored exactly each cycle (no asymmetric
+//   accumulation: e.g. overflow set twice without reset).
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 30 — detailOverlay open/close ×100 ===');
+resetState();
+resetDetailState();
+let allOverflowRestores = true;
+let allOpenStates = true;
+let allFinalCloses = true;
+for (let i = 0; i < 100; i++) {
+  F.openDetail('event', 'evt-stress-' + i);
+  if (document.body.style.overflow !== 'hidden') allOverflowRestores = false;
+  if (!detailOverlayState.open) allOpenStates = false;
+  F.closeDetail();
+  if (document.body.style.overflow !== '') allFinalCloses = false;
+  if (detailOverlayState.open) allFinalCloses = false;
+}
+tr('SC30.a 100 opens: overflow was always set to "hidden" right after open', allOverflowRestores);
+tr('SC30.b 100 opens: overlay state was always open right after open', allOpenStates);
+tr('SC30.c 100 closes: overflow was always restored to "" + overlay closed', allFinalCloses);
+eq('SC30.d final body.overflow restored', document.body.style.overflow, '');
+tr('SC30.e final overlay closed', detailOverlayState.open === false);
+eq('SC30.f doc listeners untouched (openDetail does not add doc listeners)', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// ---------------------------------------------------------------------------
+// SC31 — Modal ESC cycles ×100 (per modal type)
+//   For each of eventModal / inspiModal / roleModal: open via classList,
+//   ESC, repeat 100×. Verify each close fn was called exactly 100×, and
+//   no doc listener leak.
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 31 — modal ESC cycles ×100 each ===');
+
+function stressModalESC(modalEl, name) {
+  resetState();
+  installGlobalEsc();
+  let closeCount = 0;
+  // Wrap the close path so we count calls via a state observation
+  for (let i = 0; i < 100; i++) {
+    modalEl.classList.add('open');
+    fireKey('Escape');
+    if (modalEl._state.open === false) closeCount++;
+  }
+  uninstallGlobalEsc();
+  return { closeCount, listeners: listenerCounts() };
+}
+
+const ev31 = stressModalESC(eventModalEl, 'eventModal');
+eq('SC31.a eventModal closed exactly 100 times across 100 ESC cycles', ev31.closeCount, 100);
+eq('SC31.b eventModal: no doc listener leak', ev31.listeners, { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+const ins31 = stressModalESC(inspiModalEl, 'inspiModal');
+eq('SC31.c inspiModal closed exactly 100 times', ins31.closeCount, 100);
+eq('SC31.d inspiModal: no doc listener leak', ins31.listeners, { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+const rol31 = stressModalESC(roleModalEl, 'roleModal');
+eq('SC31.e roleModal closed exactly 100 times', rol31.closeCount, 100);
+eq('SC31.f roleModal: no doc listener leak', rol31.listeners, { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// ---------------------------------------------------------------------------
+// SC32 — Mixed sequence stress ×25
+//   Each iteration:
+//     open menu → open detail → ESC (closes both) → open eventModal → ESC
+//     → drag start → drag cleanup
+//   Verifies that ALL paths combined return cleanly with no cumulative drift.
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 32 — mixed sequence stress ×25 ===');
+resetState();
+resetDetailState();
+installGlobalEsc();
+let mixedMaxClick = 0, mixedMaxKeydown = 0, mixedMaxPointer = 0;
+let mixedFailures = [];
+for (let i = 0; i < 25; i++) {
+  // Phase 1: open menu + open detail
+  clickChip();
+  F.openDetail('event', 'mix-' + i);
+
+  // Phase 2: ESC closes both (per SC26 invariant)
+  fireKey('Escape');
+  if (!menuEl.hidden || detailOverlayState.open || document.body.style.overflow !== '') {
+    mixedFailures.push('iter ' + i + ' phase 2: menu=' + !menuEl.hidden + ' detail=' + detailOverlayState.open + ' overflow=' + JSON.stringify(document.body.style.overflow));
+    break;
+  }
+
+  // Phase 3: open eventModal + ESC
+  eventModalEl.classList.add('open');
+  fireKey('Escape');
+  if (eventModalEl._state.open) {
+    mixedFailures.push('iter ' + i + ' phase 3: eventModal still open');
+    break;
+  }
+
+  // Phase 4: drag start + cleanup
+  const pillMix = makePill('mix-pill-' + i);
+  startWeekDrag(pillMix, 1000 + i);
+  const c = listenerCounts();
+  if (c.click > mixedMaxClick) mixedMaxClick = c.click;
+  if (c.keydown > mixedMaxKeydown) mixedMaxKeydown = c.keydown;
+  if (c.pointermove > mixedMaxPointer) mixedMaxPointer = c.pointermove;
+  firePointerUp(1000 + i);  // pointerup → cleanup → also calls openDetail
+  // openDetail was called by pointerup. closeDetail to reset for next iter.
+  F.closeDetail();
+}
+uninstallGlobalEsc();
+
+eq('SC32.a no per-iteration failures recorded', mixedFailures, []);
+eq('SC32.b max simultaneous keydown across 25 iters (drag+global ESC)', mixedMaxKeydown, 2);
+eq('SC32.c max simultaneous pointermove', mixedMaxPointer, 1);
+eq('SC32.d final listeners 0', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+tr('SC32.e final menu closed', menuEl.hidden === true);
+tr('SC32.f final detail closed', detailOverlayState.open === false);
+tr('SC32.g final eventModal closed', eventModalEl._state.open === false);
+eq('SC32.h final body.overflow restored', document.body.style.overflow, '');
+tr('SC32.i _weekDrag null after cycle', getWeekDrag() === null);
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------
