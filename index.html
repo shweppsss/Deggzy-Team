@@ -7597,6 +7597,52 @@ window.App.Runtime = (function () {
   // Module-level code that needs isolated cleanup should call createScope('name').
   var globalScope = createScope('global');
 
+  /* --------------------------------------------------------------------------
+     DOM helpers — Phase 0.4 addition.
+
+     Ultra-thin wrappers around the standard DOM lookup APIs so future inline
+     handler migrations (Phase 4+) can stop writing `document.querySelector`
+     all over the place. The whole point of putting them here is to have ONE
+     line to grep for when we want to swap implementations later.
+
+     STRICT NON-FEATURES (deliberately absent — see Phase 0.4 brief):
+       - no cache / memoization
+       - no MutationObserver / auto-rebind
+       - no event delegation system
+       - no fallback when not found (returns null, like the native API)
+       - no console logging (silent on any input, even invalid)
+       - no Instrumentation.record() call
+       - no Runtime timer / scope coupling (helpers are pure functions)
+       - no auto-init, no scan on load
+       - no domain knowledge
+
+     These are pure functions, not bound to any scope's lifetime. Each call
+     hits the live DOM through the native API — no internal state, no
+     cleanup needed. createScope() does NOT get its own copy: scopes manage
+     lifecycle (timers, observers, disposers); DOM lookups are stateless.
+     -------------------------------------------------------------------------- */
+  function qs(selector, root) {
+    return (root || document).querySelector(selector);
+  }
+  function qsa(selector, root) {
+    // Return a real Array (not a live NodeList) so callers can use .filter
+    // / .map / .forEach cleanly. Array.from creates a fresh copy each call,
+    // so mutating the returned array is harmless (no shared state). We do
+    // NOT Object.freeze it — callers that need to .push() or sort their own
+    // local copy should be free to. The "ultra-thin wrapper" contract beats
+    // safety theatre here.
+    return Array.from((root || document).querySelectorAll(selector));
+  }
+  function byId(id) {
+    return document.getElementById(id);
+  }
+  function matches(el, selector) {
+    // Null-safe: caller can pass result of qs() directly without checking.
+    // Falls back to `false` for falsy `el` or for hosts without `.matches`
+    // (test stubs, detached nodes from old browsers). Never throws.
+    return !!el && typeof el.matches === 'function' && el.matches(selector);
+  }
+
   return Object.freeze({
     setTimeout: globalScope.setTimeout,
     clearTimeout: globalScope.clearTimeout,
@@ -7611,6 +7657,10 @@ window.App.Runtime = (function () {
     onDispose: globalScope.onDispose,
     dispose: globalScope.dispose,
     createScope: createScope,
+    qs: qs,
+    qsa: qsa,
+    byId: byId,
+    matches: matches,
     _global: globalScope,
   });
 })();
