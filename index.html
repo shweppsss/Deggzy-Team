@@ -7797,6 +7797,135 @@ window.App.Boot = (function () {
   });
 })();
 
+/* ============================================================================
+   App.Instrumentation — Phase 0.3 of the incremental modularization plan v3.
+
+   Passive sampled in-memory event ring. Provides a place for future modules
+   to drop debug/observability events without touching console, network,
+   localStorage, or any timer. NOT a telemetry SDK — never sends anything
+   anywhere. Future analytics consumers (if ever) get layered on top, not
+   inside this block.
+
+   PUBLIC SURFACE (all frozen via Object.freeze):
+     - record(kind, data?, opts?)   → boolean (true = stored, false = dropped)
+     - getBuffer()                  → frozen snapshot Array of events
+     - clear()                      → empties the internal buffer
+     - setEnabled(bool)             → opt-in. Throws on non-boolean.
+     - setSampleRate(rate)          → rate ∈ [0, 1]. Throws on invalid.
+     - STATUS                       → frozen enum (reserved namespace)
+     - _reset                       → test-only affordance
+
+   DESIGN RULES (non-negotiable, per Phase 0.x discipline):
+   - SILENT: zero console.* anywhere in this block, even on invalid input
+     or buffer overflow. record() must be safe to call from any handler
+     without ever producing log output. Config setters (setEnabled,
+     setSampleRate) DO throw on invalid type — throws aren't logs and
+     callers are expected to handle their own config errors at call-site.
+   - ZERO IO: no fetch, no XHR, no WebSocket, no localStorage, no IDB,
+     no postMessage. The buffer lives entirely in closure-scoped memory.
+   - ZERO TIMER: no setTimeout, no setInterval, no requestAnimationFrame.
+     Date.now() is the only time source. No scheduler, no flush queue.
+   - ZERO CONSUMER: nothing inside this file calls record() in 0.3. Future
+     modules opt in by calling setEnabled(true) + record() themselves; this
+     block does not auto-instrument anything.
+   - ZERO DOMAIN: no reference to Supabase, audio, state, profile, badges.
+     Generic kind+data+ts only.
+   - OPT-IN BY DEFAULT: enabled = false at load. Calling record() before
+     setEnabled(true) is a silent no-op. This prevents accidental capture
+     during boot or in idle production sessions.
+   - RING BUFFER: simple Array (max 200). On overflow, shift() the oldest.
+     O(n) on overflow is fine at this size — no premature complexity.
+   - PRIVATE INTERNAL STATE: the buffer Array, enabled flag, and sampleRate
+     are closure-private. There is NO `_buffer` on the public surface —
+     getBuffer() returns a frozen snapshot (Object.freeze on a slice copy)
+     so external code cannot mutate or replace the internal store.
+   - DETERMINISTIC OVERRIDE: record(kind, data, { force: true }) bypasses
+     sampling for critical/test events. force does NOT bypass enabled=false
+     — disabled is an absolute hard-stop.
+   - This block is ADDITIVE only. No App.Runtime call, no App.Boot call,
+     no global side effect at load beyond declaring the namespace.
+   ============================================================================ */
+window.App = window.App || {};
+
+window.App.Instrumentation = (function () {
+  // Frozen enum reserving the public state-name namespace. Not consumed by
+  // any method in 0.3 — kept on the surface so 0.4+ consumers can compare
+  // against canonical strings (e.g. a future state() getter, or an event
+  // payload that carries the source instance's state) without resorting to
+  // magic strings. Matches the Boot.STATUS convention.
+  var STATUS = Object.freeze({
+    ENABLED: 'enabled',
+    DISABLED: 'disabled',
+  });
+
+  var MAX_BUFFER = 200;
+
+  // Closure-private state. None of these references escape — see the
+  // public surface at the bottom, no key returns these directly.
+  var enabled = false;
+  var sampleRate = 1.0;
+  var buffer = [];
+
+  function record(kind, data, opts) {
+    // Hard-stop: disabled is absolute. The `force` opt does NOT override it.
+    // Silent return so callers can sprinkle record() liberally without
+    // producing side effects when the module is off.
+    if (!enabled) return false;
+    if (typeof kind !== 'string' || kind.length === 0) return false;
+    var force = !!(opts && opts.force === true);
+    if (!force && Math.random() >= sampleRate) return false;
+    if (buffer.length >= MAX_BUFFER) buffer.shift();
+    buffer.push({ kind: kind, ts: Date.now(), data: data });
+    return true;
+  }
+
+  function getBuffer() {
+    // Frozen shallow copy. External code cannot reach the live array,
+    // and cannot mutate the returned snapshot (Object.freeze top-level —
+    // the event objects inside are NOT deep-frozen, since deep-freezing
+    // arbitrary user payloads on every getBuffer() call would be wasteful;
+    // the contract is "don't mutate snapshot entries", same as React props).
+    return Object.freeze(buffer.slice());
+  }
+
+  function clear() {
+    buffer.length = 0;
+  }
+
+  function setEnabled(v) {
+    if (typeof v !== 'boolean') {
+      throw new Error('[Instrumentation] setEnabled: arg must be boolean');
+    }
+    enabled = v;
+  }
+
+  function setSampleRate(rate) {
+    if (typeof rate !== 'number' || !isFinite(rate) || rate < 0 || rate > 1) {
+      throw new Error('[Instrumentation] setSampleRate: arg must be a finite number in [0, 1]');
+    }
+    sampleRate = rate;
+  }
+
+  // Test affordance — same convention as Boot._reset. Resets ALL closure
+  // state (enabled, sampleRate, buffer) to construction defaults so smoke
+  // tests run hermetically. NEVER call from product code.
+  function _reset() {
+    enabled = false;
+    sampleRate = 1.0;
+    buffer.length = 0;
+  }
+
+  return Object.freeze({
+    record: record,
+    getBuffer: getBuffer,
+    clear: clear,
+    setEnabled: setEnabled,
+    setSampleRate: setSampleRate,
+    STATUS: STATUS,
+    _reset: _reset,
+  });
+})();
+
 /* ============================
    GLOBAL ERROR LOGGERS — surface boot-time errors instead of silently failing
    ============================ */
