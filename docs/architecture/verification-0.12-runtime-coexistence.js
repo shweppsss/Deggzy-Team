@@ -1,0 +1,379 @@
+/* ============================================================================
+   Phase 0.12 — runtime coexistence verification
+   ============================================================================
+   Tests the 5 unverified coexistence risks listed in the 0.11 audit, by
+   loading the REAL functions from index.html (calendar drag + account menu)
+   into a node session with a mock `document` that counts listeners.
+
+   The test is intentionally STRUCTURAL:
+   - It calls the real attach/detach paths.
+   - It does NOT exercise the visual drag (ghost positioning, drop-target
+     detection) — those are not the subject of the audit.
+   - It verifies listener-count invariants at each step of each scenario.
+
+   Run with:  node docs/architecture/verification-0.12-runtime-coexistence.js
+   ============================================================================ */
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+
+// ---------------------------------------------------------------------------
+// Mock document with listener tracking + queryable state
+// ---------------------------------------------------------------------------
+const docListeners = { click: [], keydown: [], pointermove: [], pointerup: [], pointercancel: [] };
+const dispatchLog = [];
+
+const document = {
+  addEventListener(type, fn, opts) {
+    docListeners[type] = docListeners[type] || [];
+    docListeners[type].push({ fn, once: !!(opts && opts.once) });
+    dispatchLog.push({ op: 'add', type, once: !!(opts && opts.once) });
+  },
+  removeEventListener(type, fn) {
+    if (!docListeners[type]) return;
+    const before = docListeners[type].length;
+    docListeners[type] = docListeners[type].filter(l => l.fn !== fn);
+    if (docListeners[type].length < before) {
+      dispatchLog.push({ op: 'remove', type });
+    }
+  },
+  // Stubs used by cleanup paths
+  querySelectorAll(_sel) { return []; },
+  getElementById(id) {
+    if (id === 'accountMenu') return menuEl;
+    if (id === 'userChip') return chipEl;
+    return null;
+  },
+  body: {
+    style: { overflow: '' },
+    appendChild() {},
+    contains() { return false; },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Mock DOM elements involved
+// ---------------------------------------------------------------------------
+const menuEl = {
+  hidden: true,
+  contains() { return false; },
+};
+const chipEl = {
+  contains() { return false; },
+  closest(sel) { return sel === '#userChip' ? chipEl : null; },
+};
+
+// A fake pill element used by the calendar drag handler.
+function makePill(id) {
+  return {
+    dataset: { eventId: id },
+    classList: { add() {}, remove() {} },
+    getBoundingClientRect() { return { left: 0, top: 0, width: 100, height: 20 }; },
+    setPointerCapture() {},
+    releasePointerCapture() {},
+    cloneNode() { return { classList: { add() {} }, style: {} }; },
+    closest() { return null; },
+    querySelector() { return null; },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Globals used by the extracted functions — stubbed to no-op
+// ---------------------------------------------------------------------------
+global.document = document;
+global.window = { App: {} };
+global.state = { events: [{ id: 'evt-1', date: '2026-05-17', time: '10:00', duration: 60, title: 'fake' }] };
+global.toast = () => {};
+global.haptic = () => {};
+global.renderCalendar = () => {};
+global.renderDashboard = () => {};
+global.openDetail = () => {};
+global.save = () => {};
+global._stampEventUpdate = () => {};
+global._minsToTime = () => '10:00';
+global._timeToMins = () => 600;
+global._parseIso = () => new Date();
+global._formatEventRange = () => '';
+global._formatDuration = () => '';
+global.disablePinOnThisDevice = () => {};
+global.setTimeout = (fn) => { fn(); return 0; };  // synchronous for test determinism
+global.clearTimeout = () => {};
+global.MutationObserver = function () { return { observe() {}, disconnect() {} }; };
+global.IntersectionObserver = function () { return { observe() {}, disconnect() {} }; };
+
+// ---------------------------------------------------------------------------
+// Function extraction from index.html
+// ---------------------------------------------------------------------------
+const html = fs.readFileSync(path.join(__dirname, '..', '..', 'index.html'), 'utf8');
+
+function extractFn(name) {
+  // Find `function NAME(` at start of line, then scan for matching closing brace
+  // at column 0 (function declarations in this file end with `^}$`).
+  const startMatch = html.match(new RegExp('^function ' + name + '\\b[^{]*\\{', 'm'));
+  if (!startMatch) throw new Error('Function not found: ' + name);
+  const startIdx = startMatch.index;
+  // Find first standalone closing brace at column 0 after the function start
+  const after = html.slice(startIdx);
+  const endRel = after.search(/\n\}\n/);
+  if (endRel < 0) throw new Error('End not found for: ' + name);
+  return after.slice(0, endRel + 3);
+}
+
+// Extract everything we need
+const sources = [
+  // Calendar week drag (4 fns)
+  extractFn('_onWeekEventPointerDown'),
+  extractFn('_onWeekEventPointerMove'),
+  extractFn('_onWeekEventPointerUp'),
+  extractFn('_onWeekDragKeydown'),
+  extractFn('_cleanupWeekDrag'),
+  // Account menu (4 fns)
+  extractFn('_accountMenuEscapeKey'),
+  extractFn('toggleAccountMenu'),
+  extractFn('_accountMenuOutsideClick'),
+  extractFn('hideAccountMenu'),
+];
+
+// Account menu uses `const` and `let` in its body, but the functions
+// themselves are plain. We also need to declare `_weekDrag` as a global
+// because the calendar fns expect it as a module-level binding.
+let _weekDrag = null;
+global._weekDrag = _weekDrag;
+
+// Wrap in IIFE so the extracted functions live in a scope we control.
+// We use `var` declarations explicitly (the extracted source uses `function`
+// declarations which hoist).
+const harness = `
+  var _weekDrag = null;
+  ${sources.join('\n\n')}
+
+  // Expose to outer for the test
+  globalThis.__fns = {
+    _onWeekEventPointerDown,
+    _onWeekEventPointerMove,
+    _onWeekEventPointerUp,
+    _onWeekDragKeydown,
+    _cleanupWeekDrag,
+    _accountMenuEscapeKey,
+    toggleAccountMenu,
+    _accountMenuOutsideClick,
+    hideAccountMenu,
+  };
+  globalThis.__getWeekDrag = function() { return _weekDrag; };
+`;
+eval(harness);
+const F = global.__fns;
+const getWeekDrag = global.__getWeekDrag;
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+let pass = 0, fail = 0;
+function eq(name, a, b) { const ok = JSON.stringify(a) === JSON.stringify(b); console.log((ok?'PASS ':'FAIL ')+name+(ok?'':'\n  exp: '+JSON.stringify(b)+'\n  got: '+JSON.stringify(a))); ok?pass++:fail++; }
+function tr(name, v) { console.log((v?'PASS ':'FAIL ')+name); v?pass++:fail++; }
+
+function listenerCounts() {
+  return {
+    click: docListeners.click.length,
+    keydown: docListeners.keydown.length,
+    pointermove: docListeners.pointermove.length,
+    pointerup: docListeners.pointerup.length,
+    pointercancel: docListeners.pointercancel.length,
+  };
+}
+function resetState() {
+  docListeners.click = [];
+  docListeners.keydown = [];
+  docListeners.pointermove = [];
+  docListeners.pointerup = [];
+  docListeners.pointercancel = [];
+  dispatchLog.length = 0;
+  menuEl.hidden = true;
+  // Reset calendar state via cleanup
+  if (getWeekDrag()) F._cleanupWeekDrag(null);
+}
+
+function fireDocClick(target) {
+  const list = docListeners.click.slice();
+  list.forEach(l => {
+    l.fn({ target, preventDefault() {} });
+    if (l.once) {
+      const idx = docListeners.click.indexOf(l);
+      if (idx >= 0) docListeners.click.splice(idx, 1);
+    }
+  });
+}
+function fireKey(key) {
+  const list = docListeners.keydown.slice();
+  list.forEach(l => l.fn({ key, preventDefault() {} }));
+}
+function firePointerUp(pointerId) {
+  const list = docListeners.pointerup.slice();
+  list.forEach(l => l.fn({ pointerId, clientX: 50, clientY: 50, preventDefault() {} }));
+}
+
+// Synthesize a "user starts a drag" event by calling the real pointerdown handler.
+function startWeekDrag(pill, pointerId) {
+  const ev = {
+    pointerType: 'mouse', button: 0, pointerId,
+    clientX: 10, clientY: 10,
+    currentTarget: pill,
+    target: pill,
+    preventDefault() {}, stopPropagation() {},
+  };
+  F._onWeekEventPointerDown(ev);
+}
+
+// Synthesize a "user clicks the chip" event by calling the real toggle.
+function clickChip() {
+  F.toggleAccountMenu({ stopPropagation() {} });
+}
+
+// ---------------------------------------------------------------------------
+// SANITY — baseline before any interaction
+// ---------------------------------------------------------------------------
+console.log('\n=== SANITY ===');
+resetState();
+eq('S1 initial listeners are all zero', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// Verify the harness can independently exercise a calendar drag end-to-end.
+const pill1 = makePill('evt-1');
+startWeekDrag(pill1, 1);
+eq('S2 after week-drag start: 1 pointermove + 1 pointerup + 1 pointercancel + 1 keydown', listenerCounts(), { click: 0, keydown: 1, pointermove: 1, pointerup: 1, pointercancel: 1 });
+firePointerUp(1);
+eq('S3 after pointerup: all listeners cleaned', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// Verify the harness can independently exercise the account menu.
+resetState();
+clickChip(); // open
+eq('S4 after chip click: menu open + 1 click + 1 keydown', { ...listenerCounts(), hidden: menuEl.hidden }, { click: 1, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0, hidden: false });
+clickChip(); // re-click closes
+eq('S5 after re-click: menu closed + all listeners removed', { ...listenerCounts(), hidden: menuEl.hidden }, { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0, hidden: true });
+
+// ---------------------------------------------------------------------------
+// SCENARIO 1 — Drag actif + ouverture menu (no unexpected detach)
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 1 — drag active + menu open ===');
+resetState();
+const pillA = makePill('evt-A');
+startWeekDrag(pillA, 1);
+const dragOnly = listenerCounts();
+clickChip(); // open menu MID-DRAG
+const dragPlusMenu = listenerCounts();
+eq('SC1.a drag-only baseline', dragOnly, { click: 0, keydown: 1, pointermove: 1, pointerup: 1, pointercancel: 1 });
+eq('SC1.b after opening menu mid-drag: keydown grew 1→2, click grew 0→1, pointer listeners unchanged', dragPlusMenu, { click: 1, keydown: 2, pointermove: 1, pointerup: 1, pointercancel: 1 });
+tr('SC1.c drag listeners (pointer*) were NOT detached by menu open', dragPlusMenu.pointermove === 1 && dragPlusMenu.pointerup === 1 && dragPlusMenu.pointercancel === 1);
+tr('SC1.d menu is open', menuEl.hidden === false);
+
+// Cleanup: end drag, close menu
+firePointerUp(1);
+F.hideAccountMenu();
+eq('SC1.z after pointerup + hideAccountMenu: all clean', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// ---------------------------------------------------------------------------
+// SCENARIO 2 — ESC pendant drag avec menu ouvert
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 2 — ESC during drag + menu open ===');
+resetState();
+const pillB = makePill('evt-B');
+startWeekDrag(pillB, 2);
+clickChip(); // open menu
+// At this point: 2 keydown listeners (drag + menu), 1 click (menu outside), 3 pointer
+const before = listenerCounts();
+eq('SC2.a before ESC: 2 keydown, 1 click, 3 pointer', before, { click: 1, keydown: 2, pointermove: 1, pointerup: 1, pointercancel: 1 });
+tr('SC2.b _weekDrag is set before ESC', getWeekDrag() !== null);
+fireKey('Escape');
+// Both ESC handlers fire:
+//  - _onWeekDragKeydown calls _cleanupWeekDrag → removes 4 listeners
+//  - _accountMenuEscapeKey calls hideAccountMenu → removes 2 listeners
+const after = listenerCounts();
+eq('SC2.c after ESC: ALL listeners cleaned (both handlers fired their cleanup)', after, { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+tr('SC2.d _weekDrag is null after ESC (drag canceled)', getWeekDrag() === null);
+tr('SC2.e menu is closed after ESC', menuEl.hidden === true);
+// CONCLUSION: ESC cancels BOTH drag and menu in one keypress. Both cleanup
+// paths fire independently, no listener leak. UX-wise the user gets both
+// dismissals; that may or may not be desired, but it is NOT a leak.
+
+// ---------------------------------------------------------------------------
+// SCENARIO 3 — Outside click menu pendant drag (no orphan listener)
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 3 — outside click on menu during drag ===');
+resetState();
+const pillC = makePill('evt-C');
+startWeekDrag(pillC, 3);
+clickChip(); // open menu
+eq('SC3.a setup: drag + menu open', listenerCounts(), { click: 1, keydown: 2, pointermove: 1, pointerup: 1, pointercancel: 1 });
+// Fire outside click — target is NEITHER menu nor chip
+const outsideEl = { closest() { return null; } };
+fireDocClick(outsideEl);
+// menu's outside-click ({once:true}) auto-detaches AND calls hideAccountMenu → removes keydown too
+const afterClick = listenerCounts();
+eq('SC3.b after outside click: menu closed (click+keydown removed), drag listeners intact', afterClick, { click: 0, keydown: 1, pointermove: 1, pointerup: 1, pointercancel: 1 });
+tr('SC3.c menu is closed', menuEl.hidden === true);
+tr('SC3.d _weekDrag is STILL set (drag continues)', getWeekDrag() !== null);
+// Now finish the drag cleanly
+firePointerUp(3);
+eq('SC3.e after pointerup: all clean', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// ---------------------------------------------------------------------------
+// SCENARIO 4 — Fin de drag après fermeture menu
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 4 — drag end after menu close ===');
+resetState();
+clickChip(); // open menu
+F.hideAccountMenu(); // close menu explicitly
+eq('SC4.a after open+close menu: clean', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+const pillD = makePill('evt-D');
+startWeekDrag(pillD, 4);
+eq('SC4.b after drag start: 4 listeners', listenerCounts(), { click: 0, keydown: 1, pointermove: 1, pointerup: 1, pointercancel: 1 });
+firePointerUp(4);
+eq('SC4.c after drag end: clean', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+tr('SC4.d _weekDrag null', getWeekDrag() === null);
+tr('SC4.e menu closed', menuEl.hidden === true);
+
+// ---------------------------------------------------------------------------
+// SCENARIO 5 — Re-open menu après interaction mixte
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 5 — re-open menu after mixed interaction ===');
+resetState();
+// Sequence: drag start → menu open → outside click → drag end → menu reopen → menu close
+const pillE = makePill('evt-E');
+startWeekDrag(pillE, 5);
+clickChip();
+fireDocClick({ closest() { return null; } });
+firePointerUp(5);
+// Now re-open the menu
+clickChip();
+eq('SC5.a after sequence + menu reopen: 1 click + 1 keydown, drag clean', listenerCounts(), { click: 1, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0 });
+tr('SC5.b menu is open', menuEl.hidden === false);
+F.hideAccountMenu();
+eq('SC5.c after close: all clean', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// ---------------------------------------------------------------------------
+// SCENARIO 6 (bonus) — Stress: 50 alternating cycles
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 6 — 50 alternating drag/menu cycles ===');
+resetState();
+for (let i = 0; i < 50; i++) {
+  // Half drag, half menu
+  if (i % 2 === 0) {
+    const pill = makePill('evt-' + i);
+    startWeekDrag(pill, 100 + i);
+    firePointerUp(100 + i);
+  } else {
+    clickChip();
+    clickChip();
+  }
+}
+eq('SC6 after 50 mixed cycles: ALL listeners 0', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+tr('SC6 _weekDrag null', getWeekDrag() === null);
+tr('SC6 menu closed', menuEl.hidden === true);
+
+// ---------------------------------------------------------------------------
+// SUMMARY
+// ---------------------------------------------------------------------------
+console.log('\n=== SUMMARY ===');
+console.log('Pass: ' + pass + '\nFail: ' + fail);
+console.log('Total dispatch ops (add/remove) logged: ' + dispatchLog.length);
+process.exit(fail === 0 ? 0 : 1);
