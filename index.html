@@ -6683,7 +6683,7 @@
       <div class="brand-logo">NONAME AGENCY</div>
       <div class="brand-sub">× Degzzy</div>
       <div class="brand-meta">Projet R.I.C.H — Sept. 2026</div>
-      <div id="userChip" class="user-chip" onclick="toggleAccountMenu(event)" style="display:none;">
+      <div id="userChip" class="user-chip" data-account-menu-toggle style="display:none;">
         <span class="user-chip-avatar" id="userChipAvatar" aria-hidden="true"></span>
         <span class="user-chip-dot"></span>
         <span id="userChipName">—</span>
@@ -10681,6 +10681,10 @@ async function enterApp() {
   // Hide auth, render app, subscribe to realtime
   hideAuthScreen(() => {
     refreshUserChip();
+    // Phase 0.8 — wire the account menu toggle once the chip is visible.
+    // Idempotent (skips already-bound triggers via data-account-menu-bound),
+    // so re-entering enterApp() during a refresh is harmless.
+    if (typeof bindAccountMenuToggle === 'function') bindAccountMenuToggle();
     renderAll();
     subscribeToWorkspaceRealtime();
     if (typeof subscribeToPresenceRealtime === 'function') subscribeToPresenceRealtime();
@@ -16493,7 +16497,27 @@ function logoutStudio() {
   signOutUser();
 }
 
-// Account menu — small popover anchored to the userChip in the sidebar
+/* =============================================================================
+   Account menu — small popover anchored to the userChip in the sidebar.
+
+   Phase 0.8 micro-migration:
+     - The single inline `onclick="toggleAccountMenu(event)"` on #userChip has
+       been replaced with `data-account-menu-toggle` (attribute). The new
+       `bindAccountMenuToggle()` binder (defined below) wires the click.
+     - The open/close lifecycle now ALSO attaches a `keydown` listener on
+       `document` so pressing Escape closes the menu — additive UX feature,
+       no other behavior change.
+     - Both document-level listeners (outside-click + ESC) are detached on
+       close via `hideAccountMenu()`, so steady-state has zero leftover
+       listeners.
+     - Legacy `toggleAccountMenu(ev)` / `hideAccountMenu()` remain defined
+       and exported on the global scope; no programmatic caller exists today
+       (verified by grep), but the surface is stable for future use.
+   ============================================================================ */
+function _accountMenuEscapeKey(e) {
+  // Tight predicate — only ESC triggers close, anything else is ignored.
+  if (e.key === 'Escape' || e.key === 'Esc') hideAccountMenu();
+}
 function toggleAccountMenu(ev) {
   if (ev) ev.stopPropagation();
   const menu = document.getElementById('accountMenu');
@@ -16501,16 +16525,23 @@ function toggleAccountMenu(ev) {
   const wasOpen = !menu.hidden;
   if (wasOpen) { hideAccountMenu(); return; }
   menu.hidden = false;
-  // Close on outside click — armed once per open
+  // Close on outside click — armed once per open. The `{ once: true }` flag
+  // auto-removes the listener after a single fire; the closure handler
+  // re-arms it when the click was *inside* the menu (so the menu doesn't
+  // dismiss itself on its own contents).
   setTimeout(() => {
     document.addEventListener('click', _accountMenuOutsideClick, { once: true });
   }, 0);
+  // Phase 0.8 — ESC also closes. Attached as a regular (non-once) listener
+  // and explicitly removed in hideAccountMenu(), so it dies the moment the
+  // menu closes by any path (toggle, outside-click, ESC itself).
+  document.addEventListener('keydown', _accountMenuEscapeKey);
 }
 function _accountMenuOutsideClick(e) {
   const menu = document.getElementById('accountMenu');
   if (!menu || menu.hidden) return;
   if (menu.contains(e.target) || e.target.closest('#userChip')) {
-    // Click inside menu or on the chip — re-arm for next outside click
+    // Click inside menu or on the chip — re-arm for next outside click.
     document.addEventListener('click', _accountMenuOutsideClick, { once: true });
     return;
   }
@@ -16519,6 +16550,37 @@ function _accountMenuOutsideClick(e) {
 function hideAccountMenu() {
   const menu = document.getElementById('accountMenu');
   if (menu) menu.hidden = true;
+  // Phase 0.8 — guaranteed cleanup of BOTH document listeners on every close
+  // path. The outside-click is `{ once: true }` so removing a possibly
+  // not-armed reference is a noop; ESC is always-on while open, so we have
+  // to remove it explicitly. Removing a non-attached listener is a noop
+  // per the DOM spec, so this is safe to call even when the menu was
+  // already closed (idempotent).
+  document.removeEventListener('click', _accountMenuOutsideClick);
+  document.removeEventListener('keydown', _accountMenuEscapeKey);
+}
+
+/* Binder for the account-menu trigger. Mirrors the pattern from Phase 0.5–0.7
+   binders: ultra-local, idempotent via `data-account-menu-bound` flag, scoped
+   to ONE feature. Does NOT generalize into an overlay manager / modal service
+   / global click-away registry. The document-level listeners (outside-click,
+   ESC) live in `toggleAccountMenu()` / `hideAccountMenu()` above, not here —
+   the binder only wires the trigger. */
+function bindAccountMenuToggle() {
+  var R = (typeof window !== 'undefined' && window.App && window.App.Runtime) || null;
+  var triggers = R
+    ? R.qsa('[data-account-menu-toggle]')
+    : Array.from(document.querySelectorAll('[data-account-menu-toggle]'));
+  triggers.forEach(function (el) {
+    if (el.dataset.accountMenuBound === '1') return; // idempotent
+    el.addEventListener('click', function (ev) {
+      // Closure captures nothing per-element; toggleAccountMenu uses the
+      // event to stopPropagation, then resolves the menu via getElementById
+      // — exact same surface as the legacy inline call.
+      if (typeof toggleAccountMenu === 'function') toggleAccountMenu(ev);
+    });
+    el.dataset.accountMenuBound = '1';
+  });
 }
 
 // Disable the per-device PIN without ending the Supabase session. The user
