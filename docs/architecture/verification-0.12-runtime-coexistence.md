@@ -31,6 +31,7 @@ History:
 - 0.16: 80/80 PASS — added SC14/15/16: each of eventModal / inspiModal / roleModal closes correctly on ESC (converts the 0.13 T4 trust into a runtime invariant)
 - 0.17a: 89/89 PASS — added SC17/18/18b/18c: ESC respects focused-input/textarea/contentEditable (the global handler blurs first, doesn't close the modal until next ESC). Pins a fragile global behavior contract.
 - 0.19: 96/96 PASS — added SC19/20/21: outside-click delegate at L17767 routes eventModal/inspiModal backdrop clicks, but NOT roleModal (which uses a separate inline mechanism). Verified explicitly so a future homogenization refactor doesn't silently break either path.
+- 0.20: 106/106 PASS — added SC22/23/24: physical-keyboard PIN handler at L10664. Pins the **offsetParent gate** (the documented critical fix that prevented the prior Backspace-swallow-globally bug). If anyone reverts to the wrong check (e.g. `style.display === 'none'`), SC23 fails and catches it.
 
 ```
 === SANITY ===                                          (5/5)
@@ -57,6 +58,9 @@ History:
 === SCENARIO 19 — eventModal × backdrop click ===      (3/3)  [added 0.19]
 === SCENARIO 20 — inspiModal × backdrop click ===      (3/3)  [added 0.19]
 === SCENARIO 21 — delegate does NOT route roleModal == (1/1)  [added 0.19]
+=== SCENARIO 22 — pin kbd handler (visible) ===        (5/5)  [added 0.20]
+=== SCENARIO 23 — pin kbd handler (HIDDEN gate) ===    (2/2)  [added 0.20]
+=== SCENARIO 24 — pin kbd handler (modifiers) ===      (3/3)  [added 0.20]
 ```
 
 Listener attach/detach operations logged across the run. Final listener count after every scenario is exactly **zero** (or 1 for SC13.e, which leaves the global ESC handler attached — that's architecturally always-on in the real product).

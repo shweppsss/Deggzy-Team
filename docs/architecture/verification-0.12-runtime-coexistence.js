@@ -272,6 +272,24 @@ function extractGlobalOutsideClickAsNamedFn() {
 const globalOutsideClickNamedFn = extractGlobalOutsideClickAsNamedFn();
 sources.push(globalOutsideClickNamedFn);
 
+// 0.20 — physical keyboard PIN handler at L10664. The offsetParent gate
+// is documented as a critical fix (the previous wrong check was
+// swallowing Backspace globally). Pinning it as an invariant prevents
+// the bug from returning if the check is reverted.
+function extractPinKeyboardHandlerAsNamedFn() {
+  const marker = '// Physical keyboard support — only while the PIN view';
+  const start = html.indexOf(marker);
+  if (start < 0) throw new Error('PIN keyboard handler marker not found');
+  const after = html.slice(start);
+  const end = after.indexOf('\n});\n');
+  if (end < 0) throw new Error('PIN keyboard handler closing not found');
+  let block = after.slice(0, end + 2);
+  block = block.replace("document.addEventListener('keydown', (e) => {", 'function _pinKeyboardHandlerFn(e) {');
+  return block + '\n';
+}
+const pinKeyboardNamedFn = extractPinKeyboardHandlerAsNamedFn();
+sources.push(pinKeyboardNamedFn);
+
 // Account menu uses `const` and `let` in its body, but the functions
 // themselves are plain. We also need to declare `_weekDrag` as a global
 // because the calendar fns expect it as a module-level binding.
@@ -318,6 +336,7 @@ const harness = `
     closeInspiModal,
     _globalEscRoutingFn,
     _globalModalOutsideClickFn,
+    _pinKeyboardHandlerFn,
   };
   globalThis.__getWeekDrag = function() { return _weekDrag; };
   globalThis.__getWeekResize = function() { return _weekResize; };
@@ -1046,6 +1065,125 @@ fireDocClickOnId('roleModal');
 tr('SC21.a clicking with id=roleModal via the delegate does NOT close roleModal (different mechanism)', roleModalEl._state.open === true);
 uninstallGlobalOutsideClick();
 roleModalEl.classList.remove('open');
+
+// ===========================================================================
+// 0.20 — Physical keyboard PIN handler (L10664)
+//
+// The handler typed-digit → pinKeyPress and Backspace/Delete → pinDelete,
+// GATED on `pinView.offsetParent !== null` (i.e. the PIN entry view is
+// visible). The previous-and-wrong check `pinView.style.display === 'none'`
+// caused a global Backspace-swallow bug; the offsetParent check fixed it.
+// Pinning the offsetParent contract here prevents the bug from returning
+// if anyone reverts the check.
+// ===========================================================================
+
+// Mock the PIN entry view + the digit/delete sink fns.
+const pinViewState = { hidden: true };  // true === offsetParent null (hidden)
+const pinViewEl = {
+  get offsetParent() { return pinViewState.hidden ? null : { _isParent: true }; },
+};
+
+// Extend getElementById for authPinEntryView
+const _origGetById = document.getElementById;
+document.getElementById = function (id) {
+  if (id === 'authPinEntryView') return pinViewEl;
+  return _origGetById.call(document, id);
+};
+
+let pinPressCalls = [];
+let pinDeleteCalls = 0;
+global.pinKeyPress = (d) => pinPressCalls.push(d);
+global.pinDelete = () => { pinDeleteCalls++; };
+// Make them visible to the eval'd handler too (eval'd code uses bare names).
+// The harness's IIFE eval scope captures globals at call time, so this works.
+
+function installPinKeyboard() {
+  document.addEventListener('keydown', F._pinKeyboardHandlerFn);
+}
+function uninstallPinKeyboard() {
+  document.removeEventListener('keydown', F._pinKeyboardHandlerFn);
+}
+
+function fireKeyWith(key, modifiers) {
+  const list = docListeners.keydown.slice();
+  const ev = {
+    key,
+    metaKey: !!(modifiers && modifiers.meta),
+    ctrlKey: !!(modifiers && modifiers.ctrl),
+    altKey: !!(modifiers && modifiers.alt),
+    preventDefault() {},
+  };
+  list.forEach(l => l.fn(ev));
+}
+
+// ---------------------------------------------------------------------------
+// SCENARIO 22 — PIN keyboard active when view visible
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 22 — pin keyboard handler (visible) ===');
+resetState();
+installPinKeyboard();
+pinViewState.hidden = false;  // pinView visible (offsetParent != null)
+pinPressCalls = [];
+pinDeleteCalls = 0;
+
+fireKeyWith('5');
+eq('SC22.a digit pressed → pinKeyPress("5") called', pinPressCalls, ['5']);
+
+fireKeyWith('Backspace');
+eq('SC22.b Backspace pressed → pinDelete called', pinDeleteCalls, 1);
+
+fireKeyWith('Delete');
+eq('SC22.c Delete pressed → pinDelete called again', pinDeleteCalls, 2);
+
+// Non-digit, non-Backspace key passes through
+fireKeyWith('a');
+fireKeyWith('Enter');
+fireKeyWith('Tab');
+eq('SC22.d other keys → no pinKeyPress', pinPressCalls, ['5']);
+eq('SC22.e other keys → no pinDelete', pinDeleteCalls, 2);
+
+uninstallPinKeyboard();
+
+// ---------------------------------------------------------------------------
+// SCENARIO 23 — PIN keyboard gated by offsetParent (the documented critical fix)
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 23 — pin keyboard handler (HIDDEN via offsetParent) ===');
+resetState();
+installPinKeyboard();
+pinViewState.hidden = true;  // pinView HIDDEN (offsetParent === null)
+pinPressCalls = [];
+pinDeleteCalls = 0;
+
+fireKeyWith('5');
+fireKeyWith('Backspace');
+fireKeyWith('Delete');
+tr('SC23.a HIDDEN view → digit does NOT call pinKeyPress (offsetParent gate)', pinPressCalls.length === 0);
+tr('SC23.b HIDDEN view → Backspace does NOT call pinDelete (offsetParent gate)', pinDeleteCalls === 0);
+
+uninstallPinKeyboard();
+
+// ---------------------------------------------------------------------------
+// SCENARIO 24 — PIN keyboard ignores modifier keys
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 24 — pin keyboard handler (modifiers) ===');
+resetState();
+installPinKeyboard();
+pinViewState.hidden = false;
+pinPressCalls = [];
+pinDeleteCalls = 0;
+
+fireKeyWith('5', { ctrl: true });
+fireKeyWith('5', { meta: true });
+fireKeyWith('5', { alt: true });
+tr('SC24.a Ctrl/Meta/Alt + digit → NOT routed', pinPressCalls.length === 0);
+fireKeyWith('Backspace', { ctrl: true });
+tr('SC24.b Ctrl + Backspace → NOT routed', pinDeleteCalls === 0);
+
+// And a normal digit still works
+fireKeyWith('5');
+eq('SC24.c plain digit still works after modifier tests', pinPressCalls, ['5']);
+
+uninstallPinKeyboard();
 
 // ---------------------------------------------------------------------------
 // SUMMARY
