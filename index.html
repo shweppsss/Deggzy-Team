@@ -10197,6 +10197,37 @@ async function signUpUser(ev) {
 
     // CRITICAL: check if a session was created. If not, email confirmation is required.
     if (!data.session) {
+      // Auth audit fix E — diagnostic logging.
+      // With Supabase `mailer_autoconfirm: true` (current setting on this
+      // project), `data.session` should always be present after a successful
+      // signUp. If we end up here despite that setting, it's a sign of a
+      // mis-config drift (admin flipped Confirm Email back on) OR a Supabase-
+      // side anomaly we want to catch. Log enough context to diagnose without
+      // leaking the password. Sentry breadcrumb if it's wired (captureSentryException
+      // is a no-op when Sentry isn't configured, so this is free in default install).
+      try {
+        const userObj = (data && data.user) ? {
+          id: data.user.id,
+          email_partial: data.user.email ? (data.user.email.slice(0, 3) + '…') : null,
+          aud: data.user.aud,
+          role: data.user.role,
+          email_confirmed_at: data.user.email_confirmed_at,
+          confirmed_at: data.user.confirmed_at,
+          identities_count: Array.isArray(data.user.identities) ? data.user.identities.length : null,
+          created_at: data.user.created_at,
+        } : null;
+        console.warn('[Signup] !data.session despite signUp success — confirmation likely required.', {
+          hasUser: !!data.user,
+          user: userObj,
+          authSettingsCached: _authSettings,
+        });
+        if (typeof captureSentryException === 'function') {
+          captureSentryException(new Error('signup: !data.session (confirmation flow triggered)'), {
+            tags: { area: 'signup', stage: 'post-signup' },
+            extra: { hasUser: !!data.user, user: userObj, authSettingsCached: _authSettings },
+          });
+        }
+      } catch (logErr) { /* never let logging break the flow */ }
       toast('Vérifie ton email pour confirmer ton compte (vérifie aussi les SPAMS), puis reviens te connecter.');
       // Pre-fill the email on the sign-in screen
       showSignIn();
