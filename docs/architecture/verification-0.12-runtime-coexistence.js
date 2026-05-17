@@ -48,9 +48,13 @@ const document = {
     if (id === 'detailOverlay') return detailOverlayEl;
     if (id === 'detailKind') return detailKindEl;
     if (id === 'detailBody') return detailBodyEl;
-    // detailPane intentionally not returned — the legacy global ESC handler
-    // at L17740 queries this ID; verifying behavior under this real lookup
-    // is part of the 0.14 scenarios.
+    // 0.16 — 3 other modals
+    if (id === 'eventModal') return eventModalEl;
+    if (id === 'roleModal') return roleModalEl;
+    if (id === 'inspiModal') return inspiModalEl;
+    // detailPane intentionally not returned — fixed by 0.15. The 0.14
+    // assertion that surfaced the typo remains in the harness as the
+    // regression test.
     return null;
   },
   // Active element is consulted by the global ESC handler before deciding
@@ -86,6 +90,25 @@ const detailOverlayEl = {
 };
 const detailKindEl = { textContent: '' };
 const detailBodyEl = { innerHTML: '' };
+
+// 0.16 — mocks for the 3 other modals (eventModal, roleModal, inspiModal).
+// Each tracks open/closed state through the same classList shape so the real
+// close functions and the global ESC routing can be exercised end-to-end.
+function makeModalEl(_name) {
+  const state = { open: false };
+  const el = {
+    _state: state,  // exposed for assertions
+    classList: {
+      add(c) { if (c === 'open') state.open = true; },
+      remove(c) { if (c === 'open') state.open = false; },
+      contains(c) { return c === 'open' && state.open; },
+    },
+  };
+  return el;
+}
+const eventModalEl = makeModalEl('eventModal');
+const roleModalEl = makeModalEl('roleModal');
+const inspiModalEl = makeModalEl('inspiModal');
 
 // A fake pill element used by the calendar drag handler.
 function makePill(id) {
@@ -204,6 +227,11 @@ const sources = [
   // 0.14 — detailOverlay lifecycle (T1 added try/catch on openDetail)
   extractFn('openDetail'),
   extractFn('closeDetail'),
+  // 0.16 — close functions for the 3 other modals, so the global ESC
+  // routing can drive them through their real close path (not a stub).
+  extractFn('closeEventModal'),
+  extractFn('closeRoleModal'),
+  extractFn('closeInspiModal'),
 ];
 
 // 0.14 — extract the global ESC keydown handler from index.html and wrap
@@ -242,6 +270,9 @@ const harness = `
   var _weekDrag = null;
   var _weekResize = null;
   var _calDrag = null;
+  // 0.16 — module-level state nulled by the close functions
+  var _pendingRoleKey = null;
+  var _inspiDraft = null;
   ${sources.join('\n\n')}
 
   // Expose to outer for the test
@@ -267,6 +298,9 @@ const harness = `
     hideAccountMenu,
     openDetail,
     closeDetail,
+    closeEventModal,
+    closeRoleModal,
+    closeInspiModal,
     _globalEscRoutingFn,
   };
   globalThis.__getWeekDrag = function() { return _weekDrag; };
@@ -768,6 +802,65 @@ tr('SC13.d after ESC: body.overflow restored (brief expectation)', sc13_overflow
 tr('SC13.e after ESC: only global ESC listener remains (menu listeners cleaned)', sc13_listenersZero);
 
 console.log('SC13 details: overlay.open =', detailOverlayState.open, ', overflow =', JSON.stringify(document.body.style.overflow), ', menu.hidden =', menuEl.hidden, ', listenerCounts =', JSON.stringify(listenerCounts()));
+uninstallGlobalEsc();
+
+// ===========================================================================
+// 0.16 — Global ESC routing to the OTHER 3 modals
+//
+// The 0.13 T4 finding claimed (correctly) that ESC works for eventModal,
+// inspiModal, roleModal via the global keydown handler at L17740. That
+// claim was based on source reading, not automated test. 0.14 then proved
+// the same source reading was IMPLICITLY wrong for detailOverlay (the
+// L17766 typo); 0.15 fixed it.
+//
+// SC14-SC16 convert the T4 trust into a runtime invariant: each modal
+// type opened in isolation must be closed by ESC, with the correct
+// dispatch path through the global handler.
+//
+// Scope strict: only the ESC routing path. Not outside-click. Not modal
+// coexistence with each other. Each scenario tests ONE modal.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// SCENARIO 14 — eventModal × ESC
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 14 — eventModal × ESC ===');
+resetState();
+installGlobalEsc();
+eventModalEl.classList.add('open');
+eq('SC14.a setup: eventModal open, 1 keydown (global ESC), 0 others',
+   { open: eventModalEl._state.open, listeners: listenerCounts() },
+   { open: true, listeners: { click: 0, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0 } });
+fireKey('Escape');
+tr('SC14.b after ESC: eventModal closed', eventModalEl._state.open === false);
+uninstallGlobalEsc();
+
+// ---------------------------------------------------------------------------
+// SCENARIO 15 — inspiModal × ESC
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 15 — inspiModal × ESC ===');
+resetState();
+installGlobalEsc();
+inspiModalEl.classList.add('open');
+eq('SC15.a setup: inspiModal open',
+   { open: inspiModalEl._state.open, listeners: listenerCounts() },
+   { open: true, listeners: { click: 0, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0 } });
+fireKey('Escape');
+tr('SC15.b after ESC: inspiModal closed', inspiModalEl._state.open === false);
+uninstallGlobalEsc();
+
+// ---------------------------------------------------------------------------
+// SCENARIO 16 — roleModal × ESC
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 16 — roleModal × ESC ===');
+resetState();
+installGlobalEsc();
+roleModalEl.classList.add('open');
+eq('SC16.a setup: roleModal open',
+   { open: roleModalEl._state.open, listeners: listenerCounts() },
+   { open: true, listeners: { click: 0, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0 } });
+fireKey('Escape');
+tr('SC16.b after ESC: roleModal closed', roleModalEl._state.open === false);
 uninstallGlobalEsc();
 
 // ---------------------------------------------------------------------------
