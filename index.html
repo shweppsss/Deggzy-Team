@@ -17762,9 +17762,14 @@ document.addEventListener('keydown', (e) => {
     closeRoleModal();
     return;
   }
-  // Detail pane back
-  const detailPane = document.getElementById('detailPane');
-  if (detailPane && getComputedStyle(detailPane).display !== 'none' && typeof closeDetail === 'function') {
+  // 0.15 — Detail overlay back. The element id is `detailOverlay` (not
+  // `detailPane` — that was a legacy typo, surfaced by the 0.14 harness
+  // SC12/SC13). Also dropped the getComputedStyle(...).display check
+  // because the overlay's visible state is tracked by the `.open` class,
+  // not by `display`. The new check is the open-class presence, which
+  // is what closeDetail() itself toggles off.
+  const detailOverlay = document.getElementById('detailOverlay');
+  if (detailOverlay && detailOverlay.classList.contains('open') && typeof closeDetail === 'function') {
     closeDetail();
   }
 });
