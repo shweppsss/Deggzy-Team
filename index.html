@@ -9975,7 +9975,13 @@ function _renderOnboardingSkills() {
   // the chips appear, no global DOM scan, no showAuthView() coupling.
   if (typeof bindOnboardingSkillRemove === 'function') bindOnboardingSkillRemove();
 }
-function onboardingAddSkill() {
+// T3 (0.13) — renamed from `onboardingAddSkill` to remove the legacy global
+// surface. The 0.10 audit listed this fn as 0-caller externally, but it IS
+// consumed by TWO binders (add-button click + Enter on input). Deleting it
+// would force duplicating the body across both binders. The rename to an
+// underscore-prefixed name removes the global "legacy compat" surface while
+// keeping the binder-internal coordination — no duplication created.
+function _onboardingAddSkillImpl() {
   const input = document.getElementById('signUpSkillInput');
   if (!input) return;
   const value = input.value.trim().slice(0, 40);
@@ -9988,10 +9994,8 @@ function onboardingAddSkill() {
   _renderOnboardingSkills();
   if (typeof haptic === 'function') haptic(6);
 }
-function onboardingRemoveSkill(i) {
-  _onboardingState.skills.splice(i, 1);
-  _renderOnboardingSkills();
-}
+// T3 (0.13) — `onboardingRemoveSkill` removed; its 2-line body is inlined
+// into bindOnboardingSkillRemove (see binder below). No external caller.
 
 function _renderOnboardingAvatar() {
   const btn = document.getElementById('signUpAvatarBtn');
@@ -10088,9 +10092,8 @@ function onboardingNext() {
   }
   if (_onboardingStep < 4) _showOnboardingStep(_onboardingStep + 1);
 }
-function onboardingBack() {
-  if (_onboardingStep > 1) _showOnboardingStep(_onboardingStep - 1);
-}
+// T3 (0.13): `onboardingBack()` removed. Its 1-line body is inlined into
+// bindOnboardingNav (the only caller). No external caller existed.
 
 async function signUpUser(ev) {
   ev.preventDefault();
@@ -10800,7 +10803,10 @@ function bindOnboardingAddSkill() {
   buttons.forEach(function (btn) {
     if (btn.dataset.skillAddBound === '1') return; // idempotent
     btn.addEventListener('click', function () {
-      if (typeof onboardingAddSkill === 'function') onboardingAddSkill();
+      // T3 (0.13): legacy `onboardingAddSkill` global surface removed;
+      // the impl was renamed to `_onboardingAddSkillImpl` (still shared
+      // with bindOnboardingSkillInputEnter to avoid duplication).
+      _onboardingAddSkillImpl();
     });
     btn.dataset.skillAddBound = '1';
   });
@@ -10818,7 +10824,8 @@ function bindOnboardingSkillInputEnter() {
       // characters all fall through to default input behavior.
       if (ev.key !== 'Enter') return;
       ev.preventDefault();
-      if (typeof onboardingAddSkill === 'function') onboardingAddSkill();
+      // T3 (0.13): see bindOnboardingAddSkill above — shared internal impl.
+      _onboardingAddSkillImpl();
     });
     input.dataset.skillAddEnterBound = '1';
   });
@@ -10873,7 +10880,10 @@ function bindOnboardingSkillRemove() {
     btn.addEventListener('click', function () {
       // Closure captures idx parsed at bind time — never re-reads the attr,
       // so attribute mutations after bind don't change behavior.
-      if (typeof onboardingRemoveSkill === 'function') onboardingRemoveSkill(idx);
+      // T3 (0.13): body inlined from the former `onboardingRemoveSkill(i)`
+      // legacy fn (now deleted). Two lines, same behavior.
+      _onboardingState.skills.splice(idx, 1);
+      _renderOnboardingSkills();
     });
     btn.dataset.skillRemoveBound = '1';
   });
@@ -10925,11 +10935,14 @@ function bindOnboardingNav() {
     if (action !== 'next' && action !== 'back') return; // defensive: unknown action skipped
     btn.addEventListener('click', function (ev) {
       // Closure captures the resolved action — no event-target sniffing,
-      // no string parsing at click time. Same dispatch surface as legacy.
+      // no string parsing at click time.
+      // T3 (0.13): `onboardingBack` legacy fn was 1-line — inlined here.
+      // `onboardingNext` is kept (it has a real external caller in
+      // signUpUser — out of T3 scope).
       if (action === 'next' && typeof onboardingNext === 'function') {
         onboardingNext();
-      } else if (action === 'back' && typeof onboardingBack === 'function') {
-        onboardingBack();
+      } else if (action === 'back') {
+        if (_onboardingStep > 1) _showOnboardingStep(_onboardingStep - 1);
       }
     });
     btn.dataset.onboardingNavBound = '1';
@@ -10994,18 +11007,10 @@ function bindAuthPasswordToggles() {
   });
 }
 
-/* Toggle a password input's visibility. Pure DOM, no state — the button text
-   itself doubles as the indicator. Works on any input id passed in.
-   LEGACY (Phase 0.5): no longer called from inline handlers (those were
-   migrated to bindAuthPasswordToggles). Kept for backward compatibility
-   with any programmatic caller — verified via grep, none exist today. */
-function toggleAuthPassword(inputId, btn) {
-  const input = document.getElementById(inputId);
-  if (!input || !btn) return;
-  const showing = input.type === 'text';
-  input.type = showing ? 'password' : 'text';
-  btn.textContent = showing ? 'Afficher' : 'Masquer';
-}
+// T3 (0.13): `toggleAuthPassword(inputId, btn)` removed. The 0.5 binder
+// (bindAuthPasswordToggles) was already reimplementing the logic inline
+// rather than calling this fn, so deletion has zero functional impact.
+// 0.10 audit confirmed 0 external caller.
 function showSignIn() { showAuthView('authSignInView'); document.getElementById('authTag').textContent = 'Connecte-toi pour accéder au workspace.'; }
 function showSignUp() {
   showAuthView('authSignUpView');
@@ -16584,7 +16589,10 @@ function _accountMenuEscapeKey(e) {
   // Tight predicate — only ESC triggers close, anything else is ignored.
   if (e.key === 'Escape' || e.key === 'Esc') hideAccountMenu();
 }
-function toggleAccountMenu(ev) {
+// T3 (0.13): renamed from `toggleAccountMenu` to remove the legacy global
+// surface. Only the 0.8 binder consumed it; the rename keeps the impl
+// small and named (vs inlining 10 lines into the binder click handler).
+function _toggleAccountMenuImpl(ev) {
   if (ev) ev.stopPropagation();
   const menu = document.getElementById('accountMenu');
   if (!menu) return;
@@ -16640,10 +16648,12 @@ function bindAccountMenuToggle() {
   triggers.forEach(function (el) {
     if (el.dataset.accountMenuBound === '1') return; // idempotent
     el.addEventListener('click', function (ev) {
-      // Closure captures nothing per-element; toggleAccountMenu uses the
-      // event to stopPropagation, then resolves the menu via getElementById
-      // — exact same surface as the legacy inline call.
-      if (typeof toggleAccountMenu === 'function') toggleAccountMenu(ev);
+      // Closure captures nothing per-element; _toggleAccountMenuImpl uses
+      // the event to stopPropagation, then resolves the menu via
+      // getElementById.
+      // T3 (0.13): typeof guard dropped — the impl is defined in the same
+      // file and hoisted, so the existence check was always vacuous.
+      _toggleAccountMenuImpl(ev);
     });
     el.dataset.accountMenuBound = '1';
   });
