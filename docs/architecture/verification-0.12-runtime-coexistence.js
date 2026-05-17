@@ -150,9 +150,10 @@ const sources = [
   extractFn('_onCalEventPointerUp'),
   extractFn('_onCalDragKeydown'),
   extractFn('_cleanupCalDrag'),
-  // Account menu (4 fns)
+  // Account menu (4 fns) — toggleAccountMenu was renamed to
+  // _toggleAccountMenuImpl in 0.13 T3 (legacy surface removed).
   extractFn('_accountMenuEscapeKey'),
-  extractFn('toggleAccountMenu'),
+  extractFn('_toggleAccountMenuImpl'),
   extractFn('_accountMenuOutsideClick'),
   extractFn('hideAccountMenu'),
 ];
@@ -190,7 +191,7 @@ const harness = `
     _onCalDragKeydown,
     _cleanupCalDrag,
     _accountMenuEscapeKey,
-    toggleAccountMenu,
+    _toggleAccountMenuImpl,
     _accountMenuOutsideClick,
     hideAccountMenu,
   };
@@ -303,9 +304,11 @@ function makeResizeHandle(pillId) {
   };
 }
 
-// Synthesize a "user clicks the chip" event by calling the real toggle.
+// Synthesize a "user clicks the chip" event by calling the real toggle impl.
+// 0.13 T3: function renamed from toggleAccountMenu to _toggleAccountMenuImpl
+// — same body, same behavior, just no longer a global surface.
 function clickChip() {
-  F.toggleAccountMenu({ stopPropagation() {} });
+  F._toggleAccountMenuImpl({ stopPropagation() {} });
 }
 
 // ---------------------------------------------------------------------------
