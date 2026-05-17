@@ -34,6 +34,7 @@ History:
 - 0.20: 106/106 PASS — added SC22/23/24: physical-keyboard PIN handler at L10664. Pins the **offsetParent gate** (the documented critical fix that prevented the prior Backspace-swallow-globally bug). If anyone reverts to the wrong check (e.g. `style.display === 'none'`), SC23 fails and catches it.
 - 0.21: 124/124 PASS — added SC25/26/27/28: interaction-interruption class. Pins cross-state behavior for (25) double openDetail idempotence, (26) menu+detail simultaneous close on single ESC, (27) drag listeners NOT leaking when detail opens mid-drag, (28) ESC routing-order contract (modal closes BEFORE detail; takes 2 ESCs to close both). The last is the most important — it pins the close-order, which a future refactor could silently invert.
 - 0.22: 149/149 PASS — added SC29/30/31/32: repetition stress (listener integrity under intensive cycling). SC29 menu open/close ×100, SC30 detailOverlay open/close ×100, SC31 modal ESC cycles ×100 each (×3 modals), SC32 mixed sequence ×25 across all subsystems. Detects silent accumulation that single-pass scenarios miss. 302 attach/detach operations logged across this run alone, 0 cumulative drift.
+- 0.23: 168/168 PASS — added SC33/34/35/36: storage failure suite. Mock localStorage with setItem throwing QuotaExceededError / getItem returning invalid JSON / unavailable mid-sequence. **Architectural finding**: the lifecycle paths in this harness invoked localStorage.setItem ZERO times and localStorage.getItem ZERO times across all UI operations. The UI lifecycle is **structurally independent of localStorage** — a storage failure cannot corrupt open/close paths because they don't interact with storage. SC36 confirms this holds under 50 repeated failures.
 
 ```
 === SANITY ===                                          (5/5)
@@ -71,6 +72,10 @@ History:
 === SCENARIO 30 — detailOverlay open/close ×100 ===    (6/6)  [added 0.22]
 === SCENARIO 31 — modal ESC cycles ×100 each ×3 ===    (6/6)  [added 0.22]
 === SCENARIO 32 — mixed sequence stress ×25 ===        (9/9)  [added 0.22]
+=== SCENARIO 33 — setItem throws during lifecycle ===  (8/8)  [added 0.23]
+=== SCENARIO 34 — invalid JSON from getItem ===        (4/4)  [added 0.23]
+=== SCENARIO 35 — storage unavailable mid-sequence === (5/5)  [added 0.23]
+=== SCENARIO 36 — repeated persistence failures ×50 == (2/2)  [added 0.23]
 ```
 
 Listener attach/detach operations logged across the run. Final listener count after every scenario is exactly **zero** (or 1 for SC13.e, which leaves the global ESC handler attached — that's architecturally always-on in the real product).
