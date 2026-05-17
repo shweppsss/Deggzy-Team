@@ -85,6 +85,14 @@ For each `data-*` attribute introduced by a migration, full count of consumers a
 - `enterApp` is somewhere in the middle: not strictly necessary, but more aligned than `showAuthView` would be (the chip is only meaningful post-auth).
 - Observation: the difference between "mount point is the natural lifecycle" and "mount point is the most convenient hook" is real and currently asymmetric across the 6 binders. The audit does not infer "therefore move binders X, Y to a new mount". It only records the asymmetry.
 
+### Inverse hypothesis (added on review)
+
+The "convenience, not lifecycle-required" framing above implicitly treats `showAuthView` accumulation as suspect. There is a **counter-hypothesis that this audit does not resolve**: the auth/onboarding screens may genuinely be a coherent feature island with a shared user-facing lifecycle (the user enters auth, navigates between sub-views, leaves auth on success). Under that reading, a single mount point per "feature lifecycle event" is not a drift — it's correctly modeling a real product boundary.
+
+The audit cannot decide between these two readings from grep alone. Both produce the same code pattern. The discriminator is whether the auth/onboarding stage genuinely has shared state, shared transitions, and shared cleanup at the product level — or whether the 4 binders just happen to share a convenient hook. That is a product/UX question, not a static-analysis one.
+
+**Recording both possibilities, picking neither.** Future direction-setting should consider this ambiguity rather than default to "showAuthView is overloaded".
+
 ---
 
 ## Axis 4 — Document-level listeners: coexistence and isolation
@@ -143,7 +151,19 @@ This preamble is present in **6 of 6** binders.
 
 - The similarity is **structural**, not behavioral. Each binder routes a different event, uses a different selector, sets a different flag, and (when applicable) implements a different predicate (e.g., the Enter-key predicate in 0.9 is unique to that binder).
 - No symptom of the costs that would justify abstraction has been observed yet. Per the discipline "abstractions must pay an observed problem, not an anticipated one", there is no trigger from this axis.
-- Caveat: this can change quickly. A single future bug requiring a 6-place fix would convert this from "similarity" to "observed cost".
+
+### Important temporal caveat (added on review)
+
+The "0 observed cost" finding is a **temporal observation**, not a durable property of the design. The sample is small:
+
+- 6 binders total,
+- 1 file,
+- 1 author,
+- 5 PRs over a short window.
+
+Under those conditions, the absence of divergence / copy-pasted bugs / maintenance friction may simply mean **the system has not yet lived enough** to surface those costs. The correct phrasing is "**no observable cost has emerged yet in the current context**" — not "the duplication is healthy". The distinction matters because it sets up the correct trigger for a future re-audit: any change in the sample (new author, new file, longer time horizon, first cross-binder bug) is a signal to re-run Axis 5, not to assume the earlier finding holds.
+
+A single future bug requiring a 6-place fix would convert this from "similarity" to "observed cost".
 
 ---
 
@@ -173,6 +193,12 @@ The 5 micro-migration PRs all share the following non-code structure:
 - The risk: future migrations may add scope (extra greps, extra smoke tests, extra comment blocks) just to match the template, rather than because the migration needs them.
 - Counter-observation: the template has also caught real issues (e.g., the parallel-run double-execution bug in 0.2, surfaced because the template required listing what we tested). The template is not purely overhead.
 - The audit does **not** infer "therefore drop the template" or "therefore formalize the template". It records that the template exists implicitly and may be acting as a quality floor (good) or as a scope ratchet (potential drift).
+
+### Test question (added on review)
+
+The cleanest test of whether the implicit template has become rigid is hypothetical: **if a fresh external contributor (no knowledge of 0.5-0.9) proposed a migration that did NOT follow the 8-element template — would the PR likely be evaluated on its own technical merits, or pushed to conform to the template?**
+
+This is unanswerable from grep. It can only be answered the first time such a PR actually arrives. Recording the question so it can be applied as a litmus test when the situation occurs.
 
 ---
 
@@ -204,7 +230,27 @@ This asymmetry is information. It does not say "remove the 5". It says "the 5 an
 
 The audit does not propose moving any of them. It records that the choice was convenience, and that if the convenience cost ever inverts (e.g., showAuthView starts running expensive work the binders don't need), the binders could move elsewhere without breaking their lifetime.
 
-### O4. The protocol that doesn't exist in code
+### O4. The 0.8 qualitative leap (added on review)
+
+The most significant cross-axis finding is **not** the legacy-fn caller counts, nor the `data-*` consumer count, nor the listener inventory. It is this asymmetry, visible only when reading Axes 1-4 together:
+
+| Phase | What the migration manipulates | Cleanup concern |
+|---|---|---|
+| 0.5 | Static DOM, state flip on click | None — flip is symmetric |
+| 0.6 | Static DOM, action dispatch | None — no listener lifecycle |
+| 0.7 | Dynamic DOM, but `innerHTML` wipe destroys old listeners with their nodes | None — GC handles it |
+| 0.8 | Static DOM trigger + **document-level listeners attached/detached across an explicit open/close cycle** | **Real** — leak if cleanup is incorrect |
+| 0.9 | Static DOM, two parallel binders | None — no listener lifecycle |
+
+**0.8 is the first migration in the series that touches a runtime-lifecycle problem rather than a wiring-substitution problem.** The questions of *scope*, *cleanup*, *ownership of document listeners*, *temporality of attach/detach*, and *interaction order between simultaneously-open overlays* all become real for the first time in 0.8 — they did not exist in 0.5/0.6/0.7/0.9.
+
+This is why 0.8 is also the only phase whose smoke tests had to **count listener deltas across cycles** (39 assertions, including 50-cycle stress) — the other phases didn't need that level of verification because there was no lifecycle to leak.
+
+**Implication this audit records but does not act on:** if a future migration touches another runtime-lifecycle problem (e.g. a second overlay coexisting with the account menu, a popover with its own ESC, an inline editor with focus-trap), the pattern that worked for 0.5/0.6/0.7/0.9 (static `data-*` attribute + bind once) is structurally insufficient. Such a migration is **not** "like the others" and should not be reviewed against that template.
+
+This is the most consequential finding of the audit. The static-DOM-wiring migrations and the runtime-lifecycle migration are two different categories that have been bundled under the same "binder" label.
+
+### O5. The protocol that doesn't exist in code
 
 The audit checked: is there any helper function, generator, factory, or abstraction shared between the 6 binders? **No.**
 And: is there any cross-reference (one binder reading another's attribute, one binder calling another's bind function, etc.)? **No.**
