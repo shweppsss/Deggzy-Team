@@ -6531,8 +6531,8 @@
             <div class="profile-chip-add">
               <input id="signUpSkillInput" type="text" placeholder="ex: Ableton, écriture, after effects…"
                      maxlength="40" autocomplete="off"
-                     onkeydown="if(event.key==='Enter'){event.preventDefault(); onboardingAddSkill();}" />
-              <button type="button" class="btn" onclick="onboardingAddSkill()">Ajouter</button>
+                     data-skill-add-on-enter />
+              <button type="button" class="btn" data-skill-add>Ajouter</button>
             </div>
           </div>
           <div class="auth-field">
@@ -10740,6 +10740,13 @@ function showAuthView(viewId) {
   // Phase 0.6 — same pattern for onboarding next/back buttons. Separate binder
   // (not a shared registry), separate idempotence flag (data-onboarding-nav-bound).
   if (typeof bindOnboardingNav === 'function') bindOnboardingNav();
+  // Phase 0.9 — onboarding "skills" coexistence: two ADDITIONAL separate binders
+  // for the "Ajouter" click and the input Enter key. Three discrete functions
+  // (this one + the next + the remove binder triggered from the renderer) all
+  // live in the same feature island but share NO infrastructure. Repetitive
+  // by design, exactly as discussed in the 0.9 brief.
+  if (typeof bindOnboardingAddSkill === 'function') bindOnboardingAddSkill();
+  if (typeof bindOnboardingSkillInputEnter === 'function') bindOnboardingSkillInputEnter();
   ['authSetupView','authSignInView','authSignUpView','authPinSetupView','authPinEntryView','authForgotView','authResetView'].forEach(v => {
     const el = document.getElementById(v);
     if (el) el.style.display = (v === viewId) ? (v === 'authSetupView' ? 'block' : 'flex') : 'none';
@@ -10758,6 +10765,65 @@ function showSetup() { showAuthView('authSetupView'); }
 /* Renders the invitation-only state on the signup form based on the cached
    auth/v1/settings response. When signup is disabled, the banner is shown
    and the multi-step form is visually de-emphasized + non-interactive. */
+/* =============================================================================
+   Onboarding skill — Phase 0.9 micro-migration (add button + Enter key)
+
+   This PR adds TWO binders in the same feature island (onboarding skills),
+   deliberately kept as SEPARATE functions with SEPARATE feature-scoped
+   attributes. The temptation here is to ship one `bindOnboardingActions()`
+   that takes `{ add, enter }` — that is exactly the framework drift GPT
+   has been warning against since 0.5. Phase 0.9 explicitly resists it:
+   the code is repetitive, locally traceable, and zero abstraction.
+
+   Two binders, two responsibilities:
+     - `bindOnboardingAddSkill()`         → wires the "Ajouter" button click
+     - `bindOnboardingSkillInputEnter()`  → wires the Enter key on the input
+
+   They share NOTHING:
+     - different selectors (button[data-skill-add] vs input[data-skill-add-on-enter])
+     - different bound flags (data-skill-add-bound vs data-skill-add-enter-bound)
+     - different event types (click vs keydown)
+     - different predicates (Enter binder filters key === 'Enter' tightly)
+
+   Coexistence with the 0.7 remove binder (`bindOnboardingSkillRemove`) is
+   verified by smoke: add + remove + Enter operate independently in the
+   same DOM, no cross-firing, no shared state.
+
+   LEGACY COMPAT: `onboardingAddSkill()` is kept intact. No programmatic
+   caller exists today (verified by grep), but the surface stays stable.
+   ============================================================================ */
+function bindOnboardingAddSkill() {
+  var R = (typeof window !== 'undefined' && window.App && window.App.Runtime) || null;
+  var buttons = R
+    ? R.qsa('button[data-skill-add]')
+    : Array.from(document.querySelectorAll('button[data-skill-add]'));
+  buttons.forEach(function (btn) {
+    if (btn.dataset.skillAddBound === '1') return; // idempotent
+    btn.addEventListener('click', function () {
+      if (typeof onboardingAddSkill === 'function') onboardingAddSkill();
+    });
+    btn.dataset.skillAddBound = '1';
+  });
+}
+
+function bindOnboardingSkillInputEnter() {
+  var R = (typeof window !== 'undefined' && window.App && window.App.Runtime) || null;
+  var inputs = R
+    ? R.qsa('input[data-skill-add-on-enter]')
+    : Array.from(document.querySelectorAll('input[data-skill-add-on-enter]'));
+  inputs.forEach(function (input) {
+    if (input.dataset.skillAddEnterBound === '1') return; // idempotent
+    input.addEventListener('keydown', function (ev) {
+      // Tight predicate — only Enter triggers add. Tab / arrows / typed
+      // characters all fall through to default input behavior.
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      if (typeof onboardingAddSkill === 'function') onboardingAddSkill();
+    });
+    input.dataset.skillAddEnterBound = '1';
+  });
+}
+
 /* =============================================================================
    Onboarding skill remove — Phase 0.7 micro-migration
 
