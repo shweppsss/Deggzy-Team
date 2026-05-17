@@ -6491,7 +6491,7 @@
         </div>
         <div class="onboarding-nav">
           <span></span>
-          <button type="button" class="auth-submit" onclick="onboardingNext()">Continuer →</button>
+          <button type="button" class="auth-submit" data-onboarding-action="next">Continuer →</button>
         </div>
       </div>
 
@@ -6504,8 +6504,8 @@
         </div>
         <div class="onboarding-role-grid" id="signUpRoleGrid" role="radiogroup" aria-label="Choisis ton rôle"></div>
         <div class="onboarding-nav">
-          <button type="button" class="auth-link" onclick="onboardingBack()">← Retour</button>
-          <button type="button" class="auth-submit" onclick="onboardingNext()">Continuer →</button>
+          <button type="button" class="auth-link" data-onboarding-action="back">← Retour</button>
+          <button type="button" class="auth-submit" data-onboarding-action="next">Continuer →</button>
         </div>
       </div>
 
@@ -6541,8 +6541,8 @@
           </div>
         </div>
         <div class="onboarding-nav">
-          <button type="button" class="auth-link" onclick="onboardingBack()">← Retour</button>
-          <button type="button" class="auth-submit" onclick="onboardingNext()">Continuer →</button>
+          <button type="button" class="auth-link" data-onboarding-action="back">← Retour</button>
+          <button type="button" class="auth-submit" data-onboarding-action="next">Continuer →</button>
         </div>
       </div>
 
@@ -6569,7 +6569,7 @@
         </div>
         <div class="onboarding-recap" id="signUpRecap"></div>
         <div class="onboarding-nav">
-          <button type="button" class="auth-link" onclick="onboardingBack()">← Retour</button>
+          <button type="button" class="auth-link" data-onboarding-action="back">← Retour</button>
           <button type="submit" class="auth-submit" id="signUpButton">Rejoindre l'équipe</button>
         </div>
       </div>
@@ -10724,6 +10724,9 @@ function showAuthView(viewId) {
   // so calling it here is cheap and guarantees the buttons work the first time
   // the user lands on signIn / signUp, regardless of which view they came from.
   if (typeof bindAuthPasswordToggles === 'function') bindAuthPasswordToggles();
+  // Phase 0.6 — same pattern for onboarding next/back buttons. Separate binder
+  // (not a shared registry), separate idempotence flag (data-onboarding-nav-bound).
+  if (typeof bindOnboardingNav === 'function') bindOnboardingNav();
   ['authSetupView','authSignInView','authSignUpView','authPinSetupView','authPinEntryView','authForgotView','authResetView'].forEach(v => {
     const el = document.getElementById(v);
     if (el) el.style.display = (v === viewId) ? (v === 'authSetupView' ? 'block' : 'flex') : 'none';
@@ -10742,6 +10745,63 @@ function showSetup() { showAuthView('authSetupView'); }
 /* Renders the invitation-only state on the signup form based on the cached
    auth/v1/settings response. When signup is disabled, the banner is shown
    and the multi-step form is visually de-emphasized + non-interactive. */
+/* =============================================================================
+   Onboarding nav — Phase 0.6 micro-migration
+
+   Replaces the 6 inline `onclick="onboardingNext()"` / `onclick="onboardingBack()"`
+   attributes on the 4-step signup form. Buttons now declare their intent via
+   `data-onboarding-action="next"` or `"back"`, and this binder dispatches each
+   click to the corresponding legacy function.
+
+   WHY A SECOND BINDER (and not "tant qu'on y est" extension of the password
+   binder): GPT review notes from Phase 0.5 explicitly warned that the
+   `data-*-bound` pattern must NOT drift into a generic handler registry. So
+   Phase 0.6 adds a SEPARATE, NAMED binder with its OWN feature-scoped data
+   attributes (`data-onboarding-action`, `data-onboarding-nav-bound`). No
+   shared registry, no shared dispatcher, no `registerHandler(name, fn)`
+   surface. Two binders, two named features.
+
+   IDEMPOTENCE: each button is marked `data-onboarding-nav-bound="1"` after
+   first wiring. Re-call of `bindOnboardingNav()` skips already-bound
+   buttons — same pattern as `bindAuthPasswordToggles()` from Phase 0.5.
+
+   STATE / DOM RICHNESS COVERED BY THIS PHASE:
+     - The legacy `onboardingNext()` reads 4 input values, calls `toast()`,
+       walks `_onboardingStep`, and triggers `_showOnboardingStep(...)`.
+       That richness lives in the LEGACY function — the binder just routes
+       click → dispatch. Behavior change risk is therefore zero, because
+       we never re-implement the logic; we only swap the call mechanism.
+
+   LEGACY COMPAT: `onboardingNext()` is still called programmatically from
+   `signUpUser(ev)` (around line ~10100), so the function MUST remain
+   defined. Same for `onboardingBack()`. Both kept intact.
+
+   NO AUTO-RUN AT LOAD: the binder runs explicitly from `showAuthView()`,
+   next to the existing `bindAuthPasswordToggles()` call. No IIFE wraps
+   this code; nothing happens at script-parse time.
+   ============================================================================ */
+function bindOnboardingNav() {
+  var R = (typeof window !== 'undefined' && window.App && window.App.Runtime) || null;
+  var buttons = R
+    ? R.qsa('button[data-onboarding-action]')
+    : Array.from(document.querySelectorAll('button[data-onboarding-action]'));
+  buttons.forEach(function (btn) {
+    if (btn.dataset.onboardingNavBound === '1') return; // idempotent
+    var action = btn.dataset.onboardingAction;
+    if (action !== 'next' && action !== 'back') return; // defensive: unknown action skipped
+    btn.addEventListener('click', function (ev) {
+      // Closure captures the resolved action — no event-target sniffing,
+      // no string parsing at click time. Same dispatch surface as legacy.
+      if (action === 'next' && typeof onboardingNext === 'function') {
+        onboardingNext();
+      } else if (action === 'back' && typeof onboardingBack === 'function') {
+        onboardingBack();
+      }
+    });
+    btn.dataset.onboardingNavBound = '1';
+  });
+}
+
 /* =============================================================================
    Auth password toggle — Phase 0.5 micro-migration
 
