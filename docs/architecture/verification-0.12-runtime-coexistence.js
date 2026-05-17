@@ -83,7 +83,17 @@ function makePill(id) {
 // ---------------------------------------------------------------------------
 global.document = document;
 global.window = { App: {} };
-global.state = { events: [{ id: 'evt-1', date: '2026-05-17', time: '10:00', duration: 60, title: 'fake' }] };
+// state.events.find is patched so resize/drag handlers always get a valid event
+// regardless of the test's synthetic IDs. The real find() is kept for completeness
+// but defaults to a generic event with a time field so the resize startMins check
+// passes (the resize handler bails on startMins == null).
+const _defaultEvent = { id: 'any', date: '2026-05-17', time: '10:00', duration: 60, title: 'fake' };
+global.state = { events: [_defaultEvent] };
+const _realFind = Array.prototype.find;
+global.state.events.find = function (pred) {
+  const hit = _realFind.call(this, pred);
+  return hit || _defaultEvent;
+};
 global.toast = () => {};
 global.haptic = () => {};
 global.renderCalendar = () => {};
@@ -122,12 +132,24 @@ function extractFn(name) {
 
 // Extract everything we need
 const sources = [
-  // Calendar week drag (4 fns)
+  // Calendar week drag (5 fns)
   extractFn('_onWeekEventPointerDown'),
   extractFn('_onWeekEventPointerMove'),
   extractFn('_onWeekEventPointerUp'),
   extractFn('_onWeekDragKeydown'),
   extractFn('_cleanupWeekDrag'),
+  // Calendar week resize (5 fns) — added in 0.13 T2
+  extractFn('_onWeekEventResizeDown'),
+  extractFn('_onWeekEventResizeMove'),
+  extractFn('_onWeekEventResizeUp'),
+  extractFn('_onWeekResizeKeydown'),
+  extractFn('_cleanupWeekResize'),
+  // Calendar month-grid drag (5 fns) — added in 0.13 T2
+  extractFn('_onCalEventPointerDown'),
+  extractFn('_onCalEventPointerMove'),
+  extractFn('_onCalEventPointerUp'),
+  extractFn('_onCalDragKeydown'),
+  extractFn('_cleanupCalDrag'),
   // Account menu (4 fns)
   extractFn('_accountMenuEscapeKey'),
   extractFn('toggleAccountMenu'),
@@ -146,6 +168,8 @@ global._weekDrag = _weekDrag;
 // declarations which hoist).
 const harness = `
   var _weekDrag = null;
+  var _weekResize = null;
+  var _calDrag = null;
   ${sources.join('\n\n')}
 
   // Expose to outer for the test
@@ -155,16 +179,30 @@ const harness = `
     _onWeekEventPointerUp,
     _onWeekDragKeydown,
     _cleanupWeekDrag,
+    _onWeekEventResizeDown,
+    _onWeekEventResizeMove,
+    _onWeekEventResizeUp,
+    _onWeekResizeKeydown,
+    _cleanupWeekResize,
+    _onCalEventPointerDown,
+    _onCalEventPointerMove,
+    _onCalEventPointerUp,
+    _onCalDragKeydown,
+    _cleanupCalDrag,
     _accountMenuEscapeKey,
     toggleAccountMenu,
     _accountMenuOutsideClick,
     hideAccountMenu,
   };
   globalThis.__getWeekDrag = function() { return _weekDrag; };
+  globalThis.__getWeekResize = function() { return _weekResize; };
+  globalThis.__getCalDrag = function() { return _calDrag; };
 `;
 eval(harness);
 const F = global.__fns;
 const getWeekDrag = global.__getWeekDrag;
+const getWeekResize = global.__getWeekResize;
+const getCalDrag = global.__getCalDrag;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -190,8 +228,10 @@ function resetState() {
   docListeners.pointercancel = [];
   dispatchLog.length = 0;
   menuEl.hidden = true;
-  // Reset calendar state via cleanup
+  // Reset calendar state via cleanup paths
   if (getWeekDrag()) F._cleanupWeekDrag(null);
+  if (getWeekResize()) F._cleanupWeekResize(null);
+  if (getCalDrag()) F._cleanupCalDrag(null);
 }
 
 function fireDocClick(target) {
@@ -223,6 +263,44 @@ function startWeekDrag(pill, pointerId) {
     preventDefault() {}, stopPropagation() {},
   };
   F._onWeekEventPointerDown(ev);
+}
+
+// 0.13 T2 — extend the harness to week resize + cal-grid drag (same shape).
+function startWeekResize(handle, pointerId) {
+  const ev = {
+    pointerType: 'mouse', button: 0, pointerId,
+    clientX: 10, clientY: 10,
+    currentTarget: handle,
+    target: handle,
+    preventDefault() {}, stopPropagation() {},
+  };
+  F._onWeekEventResizeDown(ev);
+}
+function startCalDrag(pill, pointerId) {
+  const ev = {
+    pointerType: 'mouse', button: 0, pointerId,
+    clientX: 10, clientY: 10,
+    currentTarget: pill,
+    target: pill,
+    preventDefault() {}, stopPropagation() {},
+  };
+  F._onCalEventPointerDown(ev);
+}
+
+// Helper to make a resize handle (the resize-down handler expects to find the
+// parent pill via .closest('.cal-week-event[data-event-id]')).
+function makeResizeHandle(pillId) {
+  const pill = makePill(pillId);
+  return {
+    closest(sel) {
+      if (sel === '.cal-week-event[data-event-id]') return pill;
+      return null;
+    },
+    setPointerCapture() {},
+    releasePointerCapture() {},
+    classList: { add() {}, remove() {} },
+    dataset: {},
+  };
 }
 
 // Synthesize a "user clicks the chip" event by calling the real toggle.
@@ -369,6 +447,95 @@ for (let i = 0; i < 50; i++) {
 eq('SC6 after 50 mixed cycles: ALL listeners 0', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
 tr('SC6 _weekDrag null', getWeekDrag() === null);
 tr('SC6 menu closed', menuEl.hidden === true);
+
+// ===========================================================================
+// 0.13 T2 — Extend to the 2 remaining calendar flows: week resize + cal-drag
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// SCENARIO 7 — Week resize: same invariants as week drag (sanity + coexistence)
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 7 — week resize × account menu coexistence ===');
+resetState();
+const handleA = makeResizeHandle('evt-resize-A');
+startWeekResize(handleA, 10);
+eq('SC7.a resize start: 4 listeners attached', listenerCounts(), { click: 0, keydown: 1, pointermove: 1, pointerup: 1, pointercancel: 1 });
+tr('SC7.b _weekResize is set', getWeekResize() !== null);
+clickChip(); // open menu mid-resize
+eq('SC7.c menu open mid-resize: keydown grew 1→2, click grew 0→1, pointer intact', listenerCounts(), { click: 1, keydown: 2, pointermove: 1, pointerup: 1, pointercancel: 1 });
+// ESC during resize + menu open: both cleanups should fire
+fireKey('Escape');
+eq('SC7.d ESC mid-resize-with-menu: all clean', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+tr('SC7.e _weekResize null after ESC', getWeekResize() === null);
+tr('SC7.f menu closed after ESC', menuEl.hidden === true);
+
+// Outside click during resize: menu closes, resize listeners untouched
+resetState();
+const handleB = makeResizeHandle('evt-resize-B');
+startWeekResize(handleB, 11);
+clickChip();
+fireDocClick({ closest() { return null; } });
+eq('SC7.g outside click during resize: resize listeners intact', listenerCounts(), { click: 0, keydown: 1, pointermove: 1, pointerup: 1, pointercancel: 1 });
+tr('SC7.h _weekResize STILL set (resize continues)', getWeekResize() !== null);
+firePointerUp(11);
+eq('SC7.i resize end after menu close: all clean', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// ---------------------------------------------------------------------------
+// SCENARIO 8 — Cal-grid drag: same invariants as week drag (sanity + coexistence)
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 8 — cal-grid drag × account menu coexistence ===');
+resetState();
+const pillCG_A = makePill('evt-cg-A');
+startCalDrag(pillCG_A, 20);
+eq('SC8.a cal-grid drag start: 4 listeners attached', listenerCounts(), { click: 0, keydown: 1, pointermove: 1, pointerup: 1, pointercancel: 1 });
+tr('SC8.b _calDrag is set', getCalDrag() !== null);
+clickChip();
+eq('SC8.c menu open mid-cal-drag: 1 click + 2 keydown + 3 pointer', listenerCounts(), { click: 1, keydown: 2, pointermove: 1, pointerup: 1, pointercancel: 1 });
+fireKey('Escape');
+eq('SC8.d ESC mid-cal-drag-with-menu: all clean', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+tr('SC8.e _calDrag null after ESC', getCalDrag() === null);
+tr('SC8.f menu closed after ESC', menuEl.hidden === true);
+
+// Outside click during cal-drag: menu closes, drag listeners untouched
+resetState();
+const pillCG_B = makePill('evt-cg-B');
+startCalDrag(pillCG_B, 21);
+clickChip();
+fireDocClick({ closest() { return null; } });
+eq('SC8.g outside click during cal-drag: drag listeners intact', listenerCounts(), { click: 0, keydown: 1, pointermove: 1, pointerup: 1, pointercancel: 1 });
+tr('SC8.h _calDrag STILL set', getCalDrag() !== null);
+firePointerUp(21);
+eq('SC8.i cal-drag end after menu close: all clean', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// ---------------------------------------------------------------------------
+// SCENARIO 9 — All three calendar flows + menu in alternating stress (30 cycles)
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 9 — 30 mixed cycles across all 3 calendar flows + menu ===');
+resetState();
+for (let i = 0; i < 30; i++) {
+  const which = i % 4;
+  if (which === 0) {
+    const p = makePill('w-' + i);
+    startWeekDrag(p, 200 + i);
+    firePointerUp(200 + i);
+  } else if (which === 1) {
+    const h = makeResizeHandle('r-' + i);
+    startWeekResize(h, 300 + i);
+    firePointerUp(300 + i);
+  } else if (which === 2) {
+    const p = makePill('c-' + i);
+    startCalDrag(p, 400 + i);
+    firePointerUp(400 + i);
+  } else {
+    clickChip();
+    clickChip();
+  }
+}
+eq('SC9 after 30 mixed cycles across all flows: ALL listeners 0', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+tr('SC9 _weekDrag null', getWeekDrag() === null);
+tr('SC9 _weekResize null', getWeekResize() === null);
+tr('SC9 _calDrag null', getCalDrag() === null);
+tr('SC9 menu closed', menuEl.hidden === true);
 
 // ---------------------------------------------------------------------------
 // SUMMARY

@@ -21,19 +21,22 @@
 
 ## Result
 
-**31 / 31 assertions PASS.**
+**54 / 54 assertions PASS** (31 from initial 0.12 + 23 added in 0.13 T2 for week resize + cal-grid drag).
 
 ```
-=== SANITY ===                                    (5/5)
-=== SCENARIO 1 — drag active + menu open ===     (5/5)
-=== SCENARIO 2 — ESC during drag + menu open === (5/5)
-=== SCENARIO 3 — outside click during drag ===   (5/5)
-=== SCENARIO 4 — drag end after menu close ===   (5/5)
-=== SCENARIO 5 — re-open after mixed sequence ===(3/3)
-=== SCENARIO 6 — 50 alternating cycles ===       (3/3)
+=== SANITY ===                                          (5/5)
+=== SCENARIO 1 — drag active + menu open ===           (5/5)
+=== SCENARIO 2 — ESC during drag + menu open ===       (5/5)
+=== SCENARIO 3 — outside click during drag ===         (5/5)
+=== SCENARIO 4 — drag end after menu close ===         (5/5)
+=== SCENARIO 5 — re-open after mixed sequence ===      (3/3)
+=== SCENARIO 6 — 50 alternating cycles ===             (3/3)
+=== SCENARIO 7 — week resize × account menu ===        (9/9)  [added 0.13]
+=== SCENARIO 8 — cal-grid drag × account menu ===      (9/9)  [added 0.13]
+=== SCENARIO 9 — 30 mixed cycles across all flows ===  (5/5)  [added 0.13]
 ```
 
-300 listener attach/detach operations logged across the run. Final listener count after every scenario (including the 50-cycle stress) is exactly **zero**.
+212 listener attach/detach operations logged across the run. Final listener count after every scenario is exactly **zero**.
 
 ---
 
@@ -104,8 +107,9 @@ All attach/detach paths are symmetric. All cleanup is called on every observed c
 ## What this verification does NOT establish
 
 - Visual drag behavior (ghost positioning, drop-target detection) is not exercised. The visual paths are tangential to listener-lifecycle coexistence and out of scope.
-- The 3 other calendar lifecycle zones (week resize, month-grid drag) were not tested individually against the account menu. The patterns are structurally identical to week-drag (per 0.11 audit Axis 3), so the conclusion is **likely** to extend, but this is not verified. If a future signal involves resize or month-grid specifically, the harness in `verification-0.12-runtime-coexistence.js` can be extended to cover them — the script is structured to make that addition straightforward.
 - Real-browser pointer-capture semantics (`setPointerCapture` / `releasePointerCapture`) are stubbed in the harness. Any anomaly that depends on actual pointer capture behavior would not surface here.
+
+**0.13 T2 update:** the 2 remaining calendar flows (week resize, month-grid drag) ARE now individually tested against the account menu lifecycle. The 0.12 caveat "patterns are structurally identical to week-drag, so the conclusion is likely to extend" is replaced by direct verification (SC7, SC8). Plus SC9 stress-tests all three flows interleaved with the menu (30 mixed cycles, 4 flow types).
 
 ---
 
