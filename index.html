@@ -7382,7 +7382,7 @@
      beneath it cleanly. -->
 <div class="detail-overlay" id="detailOverlay">
   <div class="detail-header">
-    <button class="detail-back" onclick="closeDetail()">← Retour</button>
+    <button class="detail-back" data-detail-close>← Retour</button>
     <div class="detail-kind" id="detailKind"></div>
   </div>
   <div class="detail-scroll" id="detailScroll">
@@ -16933,6 +16933,9 @@ function openDetail(kind, id) {
   document.getElementById('detailBody').innerHTML = html;
   document.getElementById('detailOverlay').classList.add('open');
   document.body.style.overflow = 'hidden';
+  // 0.18 — wire the close buttons (back button + the kind-specific "Fermer"
+  // button rendered into detailBody). Idempotent; safe to call on every open.
+  if (typeof bindDetailClose === 'function') bindDetailClose();
   // Anything after the scroll lock that may throw must be rolled back so the
   // lock doesn't outlive a partially-opened overlay (0.11 audit finding: the
   // only exception-asymmetric path in the runtime lifecycle matrix).
@@ -16962,6 +16965,27 @@ async function hydrateDetailCover(trackId) {
     el.style.display = 'block';
   }
 }
+
+// 0.18 — bind the close buttons in the detail overlay (1 static back
+// button in the header + up to 5 dynamic "Fermer" buttons rendered into
+// detailBody by detailEventHTML / detailTrackHTML / etc.). Idempotent
+// via data-detail-close-bound. Called from inside openDetail() after
+// the innerHTML write — the natural mount point for the dynamic buttons;
+// the static back button gets caught on first call and is then skipped.
+function bindDetailClose() {
+  var R = (typeof window !== 'undefined' && window.App && window.App.Runtime) || null;
+  var buttons = R
+    ? R.qsa('[data-detail-close]')
+    : Array.from(document.querySelectorAll('[data-detail-close]'));
+  buttons.forEach(function (btn) {
+    if (btn.dataset.detailCloseBound === '1') return;
+    btn.addEventListener('click', function () {
+      if (typeof closeDetail === 'function') closeDetail();
+    });
+    btn.dataset.detailCloseBound = '1';
+  });
+}
+
 function closeDetail() {
   document.getElementById('detailOverlay').classList.remove('open');
   document.body.style.overflow = '';
@@ -17049,7 +17073,7 @@ function detailEventHTML(e) {
 
     <div class="detail-actions">
       <button class="btn btn-danger" onclick="deleteEventDetail('${e.id}')">Supprimer</button>
-      <button class="btn btn-primary" onclick="closeDetail()">Fermer</button>
+      <button class="btn btn-primary" data-detail-close>Fermer</button>
     </div>
   `;
 }
@@ -17173,7 +17197,7 @@ function detailTrackHTML(t) {
 
     <div class="detail-actions">
       <button class="btn btn-danger" onclick="deleteTrackDetail('${t.id}')">Supprimer</button>
-      <button class="btn btn-primary" onclick="closeDetail()">Fermer</button>
+      <button class="btn btn-primary" data-detail-close>Fermer</button>
     </div>
   `;
 }
@@ -17440,7 +17464,7 @@ function detailInspiHTML(i) {
     </div>
     <div class="detail-actions">
       <button class="btn btn-danger" onclick="deleteInspiById('${i.id}'); closeDetail();">Supprimer</button>
-      <button class="btn btn-primary" onclick="closeDetail()">Fermer</button>
+      <button class="btn btn-primary" data-detail-close>Fermer</button>
     </div>
   `;
 }
@@ -17470,7 +17494,7 @@ function detailMemberHTML(m) {
     </div>
     <div class="detail-actions">
       <button class="btn btn-danger" onclick="deleteMember('${m.id}'); closeDetail();">Supprimer</button>
-      <button class="btn btn-primary" onclick="closeDetail()">Fermer</button>
+      <button class="btn btn-primary" data-detail-close>Fermer</button>
     </div>
   `;
 }
@@ -17514,7 +17538,7 @@ function detailPhaseHTML(p, idx) {
         `).join('')}
       </div>
     </div>` : ''}
-    <div class="detail-actions"><button class="btn btn-primary" onclick="closeDetail()">Fermer</button></div>
+    <div class="detail-actions"><button class="btn btn-primary" data-detail-close>Fermer</button></div>
   `;
 }
 
