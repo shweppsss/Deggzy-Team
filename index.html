@@ -16901,11 +16901,20 @@ function openDetail(kind, id) {
   document.getElementById('detailBody').innerHTML = html;
   document.getElementById('detailOverlay').classList.add('open');
   document.body.style.overflow = 'hidden';
-  window.scrollTo(0, 0);
-  // Hydrate IDB audio + cover if it's a track detail
-  if (kind === 'track') {
-    hydrateDetailAudio(id);
-    hydrateDetailCover(id);
+  // Anything after the scroll lock that may throw must be rolled back so the
+  // lock doesn't outlive a partially-opened overlay (0.11 audit finding: the
+  // only exception-asymmetric path in the runtime lifecycle matrix).
+  try {
+    window.scrollTo(0, 0);
+    // Hydrate IDB audio + cover if it's a track detail
+    if (kind === 'track') {
+      hydrateDetailAudio(id);
+      hydrateDetailCover(id);
+    }
+  } catch (e) {
+    document.body.style.overflow = '';
+    document.getElementById('detailOverlay').classList.remove('open');
+    throw e;
   }
 }
 
