@@ -10511,6 +10511,9 @@ async function submitPinBuffer() {
       } catch (e) { console.warn('[PIN] Hash upgrade failed (kept legacy):', e); }
     }
     clearPinFailures();
+    // Auth audit fix D — successful PIN entry resets the Face ID auto-trigger
+    // counter too, so a future visit re-enables auto-trigger from scratch.
+    if (typeof _clearWebAuthnAutoTrigFails === 'function') _clearWebAuthnAutoTrigFails();
     try {
       enterApp();
     } catch (e) {
@@ -10676,6 +10679,37 @@ function removeWebAuthn() {
   try { localStorage.removeItem(WEBAUTHN_CRED_KEY_PREFIX + _currentUser.id); } catch (e) {}
 }
 
+/* Auth audit fix D — break the WebAuthn auto-trigger / Cancel loop.
+   Symptom: on devices where Face ID consistently fails (changed phone,
+   keychain reset, glasses-in-dim-light recognition fails, OS biometry
+   temporarily disabled), the auto-trigger fires immediately on PIN entry
+   view → OS prompt → user cancels → toast "Échec biométrique" → user
+   manually navigates back to PIN entry → auto-trigger fires AGAIN.
+   The user gets stuck in a loop without realizing the PIN keypad is
+   the way out.
+
+   Fix: count consecutive Face ID auto-trigger failures in sessionStorage
+   (scope: this tab session only — full reset on next page load). Above 3
+   fails, the auto-trigger is suppressed but the Face ID BUTTON remains
+   clickable (manual override always works). PIN keypad success path
+   resets the counter so it doesn't accumulate across legitimate uses. */
+const WEBAUTHN_AUTOTRIG_FAILS_KEY = 'degzzy_webauthn_autotrig_fails';
+const WEBAUTHN_AUTOTRIG_MAX = 3;
+function _getWebAuthnAutoTrigFails() {
+  try { return parseInt(sessionStorage.getItem(WEBAUTHN_AUTOTRIG_FAILS_KEY) || '0', 10) || 0; }
+  catch (e) { return 0; }
+}
+function _recordWebAuthnAutoTrigFail() {
+  try {
+    const next = _getWebAuthnAutoTrigFails() + 1;
+    sessionStorage.setItem(WEBAUTHN_AUTOTRIG_FAILS_KEY, String(next));
+    return next;
+  } catch (e) { return 0; }
+}
+function _clearWebAuthnAutoTrigFails() {
+  try { sessionStorage.removeItem(WEBAUTHN_AUTOTRIG_FAILS_KEY); } catch (e) {}
+}
+
 // Face ID / Touch ID button on the PIN entry view. Verifies the stored
 // passkey via navigator.credentials.get(); on success skip the PIN keypad
 // and proceed straight to enterApp(). On failure leave the keypad usable.
@@ -10686,10 +10720,14 @@ async function pinTryFaceId() {
   try {
     const ok = await verifyWebAuthn();
     if (!ok) {
+      // Auth audit fix D — record fail so consecutive auto-triggers stop
+      // looping. Manual click still works regardless of counter.
+      _recordWebAuthnAutoTrigFail();
       if (typeof toast === 'function') toast('Échec biométrique. Utilise ton PIN.');
       return;
     }
     clearPinFailures();
+    _clearWebAuthnAutoTrigFails();
     if (typeof haptic === 'function') haptic(25);
     enterApp();
   } finally {
@@ -10709,7 +10747,11 @@ async function _refreshPinFaceIdButton() {
   const available = await isWebAuthnAvailable();
   btn.hidden = !available;
   // Auto-trigger when the view first opens — feels native on iOS.
-  if (available && !_pinBuffer) {
+  // Auth audit fix D — suppress the auto-trigger once we've hit
+  // WEBAUTHN_AUTOTRIG_MAX consecutive Cancel/fail in this session, so the
+  // user isn't stuck in a Cancel-then-trigger-again loop. The button
+  // remains visible + clickable for manual retry.
+  if (available && !_pinBuffer && _getWebAuthnAutoTrigFails() < WEBAUTHN_AUTOTRIG_MAX) {
     // Slight delay so the layout settles before the OS prompt slides in.
     setTimeout(() => { if (!_pinBuffer) pinTryFaceId(); }, 300);
   }
