@@ -8399,16 +8399,21 @@ async function verifyPin(pin, stored) {
   } catch (e) { return false; }
 }
 
-/* WEAK PIN BLOCKLIST
-   Refuses the most-guessed 4-digit codes at setup. Catches the ~20% of users
-   who'd otherwise pick "1234" or "0000" — combined with the new lockout this
-   makes the brute-force budget on a stolen device unrealistic. */
+/* WEAK PIN BLOCKLIST — auth audit fix A
+   Previously refused ~40 codes incl. niche patterns (1004, 0420, 6969, 2468,
+   1379, 2580, 7531, 1010, 0101 etc.) that frustrated users into trying 5+
+   PINs before finding one that passed setup. For a music-collab app with
+   per-device PIN + escalating lockout (3→30s, 6→5min, 10→forced signOut),
+   the marginal brute-force protection from blocking those niche patterns
+   was paid in real abandonment of the setup flow.
+   The reduced list keeps the only genuinely guessable codes:
+     - 10 single-digit repeats (0000…9999)
+     - 2 obvious sequences (1234, 4321)
+   Total: 12 codes (~3× less restrictive). Combined with the device-local
+   lockout the brute-force budget on a stolen device stays unrealistic. */
 const WEAK_PINS = new Set([
   '0000','1111','2222','3333','4444','5555','6666','7777','8888','9999',
-  '1234','2345','3456','4567','5678','6789',
-  '9876','8765','7654','6543','5432','4321','3210','0987',
-  '1212','2121','1010','0101','0123','1098','1379','2580','1357','7531',
-  '1004','2004','0420','6969','1111','1313','6789','2468',
+  '1234','4321',
 ]);
 function isWeakPin(pin) {
   if (!/^\d{4}$/.test(pin)) return false;
