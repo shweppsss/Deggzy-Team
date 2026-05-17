@@ -6343,10 +6343,38 @@
   .pin-key-faceid { color: var(--accent); }
   .pin-key-delete { color: var(--text-soft); }
 
+  /* Auth audit fix B — make the PIN escape hatch more findable.
+     Previously the link sat as a small text-only "Code oublié ? Reconnecte-toi"
+     below the keypad — users stranded with a forgotten PIN often didn't
+     recognize it as an exit. Now it's a bordered pill that visually signals
+     "click me, this is a way out". */
   .pin-forgot {
-    display: block;
-    margin: 18px auto 0;
+    display: inline-block;
+    margin: 22px auto 0;
+    padding: 9px 16px;
     text-align: center;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-soft);
+    font: var(--font-body-s);
+    background: transparent;
+    transition: var(--transition);
+    cursor: pointer;
+  }
+  .pin-forgot:hover {
+    color: var(--text);
+    border-color: var(--text-soft);
+  }
+  /* Helper note under the escape-hatch button. Explains where the user lands
+     after clicking and how to access the password reset flow from there. */
+  .pin-forgot-hint {
+    display: block;
+    margin: 8px auto 0;
+    text-align: center;
+    color: var(--text-dim);
+    font: var(--font-caption);
+    max-width: 280px;
+    line-height: 1.4;
   }
 
   /* Mobile — slightly more compact keypad */
@@ -6644,7 +6672,12 @@
         </button>
       </div>
 
-      <button type="button" class="auth-link pin-forgot" onclick="resetLocalPin()">Code oublié ? Reconnecte-toi</button>
+      <!-- Auth audit fix B — escape hatch made findable.
+           Pill button + explanatory hint below so a stranded user understands
+           the next step (sign-in screen, where "Mot de passe oublié ?" lives
+           if they also forgot the password). -->
+      <button type="button" class="auth-link pin-forgot" onclick="resetLocalPin()">J'ai oublié mon code</button>
+      <span class="pin-forgot-hint">Tu seras redirigé vers la connexion. Si tu as aussi oublié ton mot de passe, choisis « Mot de passe oublié ? » là-bas.</span>
     </div>
 
     <!-- Forgot password (sends reset email) -->
@@ -17911,5 +17944,18 @@ window.addEventListener('load', () => {
   setTimeout(maybeShowIosInstallBanner, 1800);
 });
 </script>
+
+<!-- ====================================================================
+     TypeScript migration entry point — Phase TS-0 (PR introducing the
+     Vite build pipeline). Currently this module is empty. Phase TS-1+
+     will progressively extract the inline <script> blocks above into
+     typed modules under /src/, each re-exposed on `window` for legacy
+     compatibility during the transition.
+
+     In production (after Vite build), this script tag's `src` is
+     rewritten by Vite to point at the bundled output under /assets/.
+     In dev (`npm run dev`), Vite serves /src/main.ts directly.
+     ==================================================================== -->
+<script type="module" src="/src/main.ts"></script>
 </body>
 </html>

@@ -1,0 +1,17 @@
+{
+  "name": "deggzy-team",
+  "version": "0.1.0",
+  "description": "Internal webapp for album management (R.I.C.H release 2026-09-11). Phase TS migration in progress.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "verify": "node docs/architecture/verification-0.12-runtime-coexistence.cjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11"
+  }
+}
