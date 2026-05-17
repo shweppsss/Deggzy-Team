@@ -8382,9 +8382,19 @@ function isWeakPin(pin) {
   return WEAK_PINS.has(pin);
 }
 
-/* PIN ATTEMPT LOCKOUT
-   Per-user, persisted in localStorage so a page reload doesn't reset the counter.
-   3 fails → 30s; 6 fails → 5 min; 10 fails → force email/password re-auth. */
+/* PIN ATTEMPT LOCKOUT — auth audit fix C
+   Per-user, persisted in localStorage so a page reload doesn't reset.
+   Previous thresholds were 3 / 6 / 10 (force signOut). Audit showed that
+   10-fail force-signOut left users stranded when they also couldn't
+   remember their password — pushed it to 15 to give breathing room,
+   and added an intermediate 10-fail step (30min lock + warning) so
+   users get a clearer escalation signal before the irreversible signOut. */
+const PIN_LOCKOUT_THRESHOLDS = Object.freeze({
+  W30S:        3,  // 3 fails  → 30 s lock
+  W5MIN:       6,  // 6 fails  → 5 min lock
+  W30MIN:     10,  // 10 fails → 30 min lock + clearer warning
+  SIGNOUT:    15,  // 15 fails → force re-auth via email/password
+});
 function _pinLockKey() {
   return _currentUser ? ('degzzy_pin_lock_' + _currentUser.id) : null;
 }
@@ -8404,9 +8414,11 @@ function recordPinFailure() {
   if (!key) return { count: 0, lockedUntil: 0 };
   const count = (getPinLockState().count || 0) + 1;
   let lockedUntil = 0;
-  if (count >= 10)     lockedUntil = Date.now() + 60 * 60 * 1000;  // 1h (we'll signOut anyway)
-  else if (count >= 6) lockedUntil = Date.now() + 5 * 60 * 1000;   // 5 min
-  else if (count >= 3) lockedUntil = Date.now() + 30 * 1000;       // 30 s
+  const T = PIN_LOCKOUT_THRESHOLDS;
+  if      (count >= T.SIGNOUT) lockedUntil = Date.now() + 60 * 60 * 1000;     // 1h (signOut fires anyway)
+  else if (count >= T.W30MIN)  lockedUntil = Date.now() + 30 * 60 * 1000;     // 30 min
+  else if (count >= T.W5MIN)   lockedUntil = Date.now() + 5  * 60 * 1000;     // 5 min
+  else if (count >= T.W30S)    lockedUntil = Date.now() + 30 * 1000;          // 30 s
   localStorage.setItem(key, JSON.stringify({ count, lockedUntil }));
   return { count, lockedUntil };
 }
@@ -10474,20 +10486,32 @@ async function submitPinBuffer() {
     return;
   }
 
-  // Wrong PIN — record + decide lockout response
+  // Wrong PIN — record + decide lockout response.
+  // Auth audit fix C — escalation now 30s → 5min → 30min → forced signOut
+  // (was 30s → 5min → forced signOut at 10). The intermediate 30-min lock
+  // at 10 fails gives users a clear signal before the irreversible signOut
+  // at 15, and gives them time to retry calmly or recover the password
+  // via "Mot de passe oublié ?" without losing their session.
   const { count, lockedUntil } = recordPinFailure();
-  if (count >= 10) {
+  const T = PIN_LOCKOUT_THRESHOLDS;
+  if (count >= T.SIGNOUT) {
     toast('Trop d\'essais. Déconnexion forcée — reconnecte-toi par email/mot de passe.');
     haptic(60);
     setTimeout(() => { if (typeof signOutUser === 'function') signOutUser(); }, 1500);
     return;
   }
+  const remainingAttempts = T.SIGNOUT - count;
   if (lockedUntil > 0) {
     const secs = Math.max(1, Math.ceil((lockedUntil - Date.now()) / 1000));
     const minsLabel = secs >= 60 ? (Math.floor(secs / 60) + 'min ' + (secs % 60) + 's') : (secs + 's');
-    toast('Code incorrect (' + count + '/10). Verrouillé ' + minsLabel + '.');
+    if (count >= T.W30MIN) {
+      // Closer to the cliff — make the consequence explicit.
+      toast('Code incorrect (' + count + '/' + T.SIGNOUT + '). Verrouillé ' + minsLabel + '. Encore ' + remainingAttempts + ' essai' + (remainingAttempts > 1 ? 's' : '') + ' avant déconnexion forcée.');
+    } else {
+      toast('Code incorrect (' + count + '/' + T.SIGNOUT + '). Verrouillé ' + minsLabel + '.');
+    }
   } else {
-    toast('Code incorrect (' + count + '/10).');
+    toast('Code incorrect (' + count + '/' + T.SIGNOUT + ').');
   }
   haptic(60);
   const dotsRow = document.getElementById('pinDots');
