@@ -40,11 +40,22 @@ const document = {
   },
   // Stubs used by cleanup paths
   querySelectorAll(_sel) { return []; },
+  querySelector(_sel) { return null; },
   getElementById(id) {
     if (id === 'accountMenu') return menuEl;
     if (id === 'userChip') return chipEl;
+    // 0.14 — detailOverlay scenarios
+    if (id === 'detailOverlay') return detailOverlayEl;
+    if (id === 'detailKind') return detailKindEl;
+    if (id === 'detailBody') return detailBodyEl;
+    // detailPane intentionally not returned — the legacy global ESC handler
+    // at L17740 queries this ID; verifying behavior under this real lookup
+    // is part of the 0.14 scenarios.
     return null;
   },
+  // Active element is consulted by the global ESC handler before deciding
+  // whether to dismiss a modal. Default: nothing focused.
+  activeElement: null,
   body: {
     style: { overflow: '' },
     appendChild() {},
@@ -64,6 +75,18 @@ const chipEl = {
   closest(sel) { return sel === '#userChip' ? chipEl : null; },
 };
 
+// 0.14 — detailOverlay mocks
+const detailOverlayState = { open: false };
+const detailOverlayEl = {
+  classList: {
+    add(c) { if (c === 'open') detailOverlayState.open = true; },
+    remove(c) { if (c === 'open') detailOverlayState.open = false; },
+    contains(c) { return c === 'open' && detailOverlayState.open; },
+  },
+};
+const detailKindEl = { textContent: '' };
+const detailBodyEl = { innerHTML: '' };
+
 // A fake pill element used by the calendar drag handler.
 function makePill(id) {
   return {
@@ -82,23 +105,45 @@ function makePill(id) {
 // Globals used by the extracted functions — stubbed to no-op
 // ---------------------------------------------------------------------------
 global.document = document;
-global.window = { App: {} };
+global.window = { App: {}, scrollTo() {} };
 // state.events.find is patched so resize/drag handlers always get a valid event
 // regardless of the test's synthetic IDs. The real find() is kept for completeness
 // but defaults to a generic event with a time field so the resize startMins check
 // passes (the resize handler bails on startMins == null).
 const _defaultEvent = { id: 'any', date: '2026-05-17', time: '10:00', duration: 60, title: 'fake' };
-global.state = { events: [_defaultEvent] };
+const _defaultTrack = { id: 'any-track', name: 'fake' };
+global.state = { events: [_defaultEvent], tracks: [_defaultTrack] };
 const _realFind = Array.prototype.find;
 global.state.events.find = function (pred) {
   const hit = _realFind.call(this, pred);
   return hit || _defaultEvent;
 };
+global.state.tracks.find = function (pred) {
+  const hit = _realFind.call(this, pred);
+  return hit || _defaultTrack;
+};
 global.toast = () => {};
 global.haptic = () => {};
 global.renderCalendar = () => {};
 global.renderDashboard = () => {};
+// 0.14 — openDetail / closeDetail are now extracted from index.html below.
+// The harness's previous stub assignments are kept here as fallbacks and
+// will be overridden by the eval'd real implementations.
 global.openDetail = () => {};
+global.closeDetail = () => {};
+// Stubs for the detail helpers openDetail calls. The harness doesn't
+// exercise their rendering — they just need to not throw.
+global.typeLabel = () => 'LBL';
+global.detailEventHTML = () => '<div>fake-event</div>';
+global.detailTrackHTML = () => '<div>fake-track</div>';
+global.detailTodoHTML = () => '';
+global.detailInspiHTML = () => '';
+global.detailMemberHTML = () => '';
+global.detailPhaseHTML = () => '';
+global.hydrateDetailAudio = () => {};
+global.hydrateDetailCover = () => {};
+global.renderView = () => {};
+global.getComputedStyle = (_el) => ({ display: 'block' });
 global.save = () => {};
 global._stampEventUpdate = () => {};
 global._minsToTime = () => '10:00';
@@ -156,7 +201,33 @@ const sources = [
   extractFn('_toggleAccountMenuImpl'),
   extractFn('_accountMenuOutsideClick'),
   extractFn('hideAccountMenu'),
+  // 0.14 — detailOverlay lifecycle (T1 added try/catch on openDetail)
+  extractFn('openDetail'),
+  extractFn('closeDetail'),
 ];
+
+// 0.14 — extract the global ESC keydown handler from index.html and wrap
+// it as a NAMED function `_globalEscRoutingFn` so it can be installed /
+// uninstalled on demand. We deliberately do NOT auto-attach it at harness
+// boot — only SC12 and SC13 need it; earlier scenarios expect zero baseline
+// listeners.
+function extractGlobalEscAsNamedFn() {
+  const marker = '// ESC key closes any open modal';
+  const start = html.indexOf(marker);
+  if (start < 0) throw new Error('Global ESC handler marker not found');
+  const after = html.slice(start);
+  const end = after.indexOf('\n});\n');
+  if (end < 0) throw new Error('Global ESC handler closing not found');
+  // Slice up to AND including the trailing `\n}` — drop the `);\n` of the
+  // addEventListener call wrapper.
+  // `\n});\n` is 5 chars; we want the substring ending at the `}` (so end+2 chars in).
+  let block = after.slice(0, end + 2);  // includes `\n}`
+  // Replace the addEventListener wrapper with a named function declaration.
+  block = block.replace("document.addEventListener('keydown', (e) => {", 'function _globalEscRoutingFn(e) {');
+  return block + '\n';
+}
+const globalEscNamedFn = extractGlobalEscAsNamedFn();
+sources.push(globalEscNamedFn);
 
 // Account menu uses `const` and `let` in its body, but the functions
 // themselves are plain. We also need to declare `_weekDrag` as a global
@@ -194,6 +265,9 @@ const harness = `
     _toggleAccountMenuImpl,
     _accountMenuOutsideClick,
     hideAccountMenu,
+    openDetail,
+    closeDetail,
+    _globalEscRoutingFn,
   };
   globalThis.__getWeekDrag = function() { return _weekDrag; };
   globalThis.__getWeekResize = function() { return _weekResize; };
@@ -539,6 +613,162 @@ tr('SC9 _weekDrag null', getWeekDrag() === null);
 tr('SC9 _weekResize null', getWeekResize() === null);
 tr('SC9 _calDrag null', getCalDrag() === null);
 tr('SC9 menu closed', menuEl.hidden === true);
+
+// ===========================================================================
+// 0.14 — detailOverlay × account menu coexistence (added per 0.14 brief)
+//
+// T1 introduced a new runtime behavior on openDetail: an exception thrown
+// after `body.style.overflow = 'hidden'` triggers a rollback (restore
+// overflow + remove 'open' + rethrow). None of SC1-SC9 covered:
+//   - coexistence between body.overflow-locking overlays and other runtime
+//     interactions,
+//   - exception-rollback under coexistence,
+//   - ordering of cleanups when multiple subsystems touch document-level
+//     state.
+//
+// SC10-SC13 close that gap. Scope strict: detailOverlay × account menu
+// only. No calendar. No other modals.
+// ===========================================================================
+
+function resetDetailState() {
+  detailOverlayState.open = false;
+  document.body.style.overflow = '';
+}
+
+// Helpers to install / uninstall the global ESC routing handler.
+// SC12 + SC13 need it; earlier scenarios assume zero baseline.
+function installGlobalEsc() {
+  document.addEventListener('keydown', F._globalEscRoutingFn);
+}
+function uninstallGlobalEsc() {
+  document.removeEventListener('keydown', F._globalEscRoutingFn);
+}
+
+// ---------------------------------------------------------------------------
+// SCENARIO 10 — Open detail → open menu → close menu
+//   Invariant: closing the menu does NOT restore body.style.overflow.
+//               The overlay remains the sole owner of the lock.
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 10 — open detail × open menu × close menu ===');
+resetState();
+resetDetailState();
+F.openDetail('event', 'evt-1');
+eq('SC10.a after openDetail: overlay open', detailOverlayState.open, true);
+eq('SC10.b after openDetail: body.overflow locked', document.body.style.overflow, 'hidden');
+clickChip();  // open menu
+eq('SC10.c after menu open: 1 click + 1 keydown listener on doc', listenerCounts(), { click: 1, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0 });
+F.hideAccountMenu();  // close menu only
+eq('SC10.d body.overflow STILL locked after menu close', document.body.style.overflow, 'hidden');
+tr('SC10.e overlay STILL open after menu close', detailOverlayState.open === true);
+eq('SC10.f menu doc listeners removed (0 / 0)', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// ---------------------------------------------------------------------------
+// SCENARIO 11 — Open detail → open menu → exception thrown inside openDetail
+//   We simulate the T1 path: an exception after the body.overflow lock.
+//   T1's catch should restore overflow + close overlay + rethrow, AND must
+//   not leak menu-related listeners (the menu opening happens BEFORE the
+//   exception in this construction).
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 11 — open detail × open menu × exception during a SECOND openDetail call ===');
+resetState();
+resetDetailState();
+// First openDetail succeeds (sets overflow, opens overlay)
+F.openDetail('event', 'evt-1');
+clickChip();  // open menu
+eq('SC11.a setup ok', { open: detailOverlayState.open, overflow: document.body.style.overflow, listeners: listenerCounts() },
+   { open: true, overflow: 'hidden', listeners: { click: 1, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0 } });
+
+// Now make a SECOND openDetail call that will throw mid-flow.
+// We make hydrateDetailAudio throw on the next call to simulate an IDB
+// failure on a track open. This exercises the T1 catch path.
+const originalHydrate = global.hydrateDetailAudio;
+global.hydrateDetailAudio = () => { throw new Error('idb-down'); };
+// Re-eval openDetail so the new throwing stub is captured by its closure
+// (the extracted fn captured global at eval time; safer to re-eval).
+let caught = null;
+try { F.openDetail('track', 't1'); } catch (e) { caught = e.message; }
+global.hydrateDetailAudio = originalHydrate;
+
+tr('SC11.b exception rethrown from openDetail', caught === 'idb-down');
+eq('SC11.c body.overflow RESTORED by T1 catch', document.body.style.overflow, '');
+tr('SC11.d overlay closed by T1 catch', detailOverlayState.open === false);
+// Menu listeners are independent — they should still be attached because
+// the exception was in openDetail, not in the menu lifecycle.
+eq('SC11.e menu listeners still attached after exception (independent)', listenerCounts(), { click: 1, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0 });
+F.hideAccountMenu();
+eq('SC11.f menu cleanup still works after exception', listenerCounts(), { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 });
+
+// ---------------------------------------------------------------------------
+// SCENARIO 12 — Open detail → ESC (no menu)
+//   The legacy global ESC handler at L17740 in index.html is supposed to
+//   route ESC to closeDetail when detail is open. Verify that path works.
+//
+//   NOTE on what this scenario will surface: index.html L17766 queries
+//   `document.getElementById('detailPane')` while the actual overlay
+//   element is `detailOverlay`. The harness mock therefore returns null
+//   for 'detailPane' (matching real-DOM behavior). If the handler relies
+//   solely on this lookup to dismiss the detail view, ESC will not close
+//   the overlay. The scenario verifies what the brief asks; the result
+//   reflects the actual current behavior.
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 12 — open detail × ESC ===');
+resetState();
+resetDetailState();
+installGlobalEsc();
+F.openDetail('event', 'evt-1');
+eq('SC12.a setup: detail open, overflow locked, 1 keydown listener (global ESC)',
+   { open: detailOverlayState.open, overflow: document.body.style.overflow, listeners: listenerCounts().keydown },
+   { open: true, overflow: 'hidden', listeners: 1 });
+
+// Fire ESC
+fireKey('Escape');
+console.log('SC12.b after ESC: overlay state =', detailOverlayState.open, '(brief expects false)');
+console.log('SC12.c after ESC: body.overflow =', JSON.stringify(document.body.style.overflow), "(brief expects '')");
+const sc12_overlayClosed = detailOverlayState.open === false;
+const sc12_overflowReset = document.body.style.overflow === '';
+tr('SC12.b after ESC: overlay closed (brief expectation)', sc12_overlayClosed);
+tr('SC12.c after ESC: body.overflow restored (brief expectation)', sc12_overflowReset);
+uninstallGlobalEsc();
+// If SC12.b/c FAIL, it surfaces the index.html L17766 detailPane / detailOverlay
+// id mismatch — a real defect the brief asked us to verify against.
+
+// ---------------------------------------------------------------------------
+// SCENARIO 13 — Open detail → open menu → ESC
+//   Critical real-world coexistence case. Two keydown handlers exist:
+//     - _accountMenuEscapeKey (menu-specific)
+//     - the global L17740 handler (routes to closeDetail when detail open)
+//   Both fire on ESC. Verify the final state is consistent: menu closed,
+//   overlay closed, overflow reset, 0 leftover listeners.
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 13 — open detail × open menu × ESC ===');
+resetState();
+resetDetailState();
+installGlobalEsc();
+F.openDetail('event', 'evt-1');
+clickChip();  // open menu — adds 1 click + 1 keydown
+eq('SC13.a setup: detail+menu open, 1 click + 2 keydown (menu + global)',
+   { open: detailOverlayState.open, overflow: document.body.style.overflow, listeners: listenerCounts() },
+   { open: true, overflow: 'hidden', listeners: { click: 1, keydown: 2, pointermove: 0, pointerup: 0, pointercancel: 0 } });
+
+fireKey('Escape');
+// Brief's expected end state:
+const sc13_overlayClosed = detailOverlayState.open === false;
+const sc13_overflowReset = document.body.style.overflow === '';
+const sc13_menuClosed = menuEl.hidden === true;
+const sc13_listenersZero = JSON.stringify(listenerCounts()) === JSON.stringify({ click: 0, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0 });
+// keydown=1 because the global ESC routing fn is still attached (not auto-uninstalled).
+// The brief said "0 listeners restants" — we interpret that as ZERO MENU-related
+// listeners + ZERO overlay-related listeners. The global ESC handler is
+// architecturally always-on (legacy installation), so leaving it attached
+// matches real-product behavior.
+
+tr('SC13.b after ESC: menu closed', sc13_menuClosed);
+tr('SC13.c after ESC: overlay closed (brief expectation)', sc13_overlayClosed);
+tr('SC13.d after ESC: body.overflow restored (brief expectation)', sc13_overflowReset);
+tr('SC13.e after ESC: only global ESC listener remains (menu listeners cleaned)', sc13_listenersZero);
+
+console.log('SC13 details: overlay.open =', detailOverlayState.open, ', overflow =', JSON.stringify(document.body.style.overflow), ', menu.hidden =', menuEl.hidden, ', listenerCounts =', JSON.stringify(listenerCounts()));
+uninstallGlobalEsc();
 
 // ---------------------------------------------------------------------------
 // SUMMARY
