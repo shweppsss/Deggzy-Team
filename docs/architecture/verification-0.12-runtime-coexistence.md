@@ -21,7 +21,11 @@
 
 ## Result
 
-**54 / 54 assertions PASS** (31 from initial 0.12 + 23 added in 0.13 T2 for week resize + cal-grid drag).
+**70 / 74 assertions PASS, 4 assertions FAIL — by design (the harness now surfaces a real defect).**
+
+The 4 failing assertions are in SC12 and SC13. They were written per the 0.14 brief expectation that **ESC closes `detailOverlay`**. The harness reveals that the legacy global ESC handler at `index.html` L17766 queries `document.getElementById('detailPane')` — an element ID that does not exist. The actual overlay element has id `detailOverlay`. Result: ESC currently does NOT close the detail view.
+
+This is a real product defect surfaced by the verification, not a test bug. The fix (a 1-word typo correction) is intentionally NOT included in this PR per the established discipline of "one concern per PR" — it will land in the next PR. The failing assertions remain in the harness until the fix lands, so any drift is detected.
 
 ```
 === SANITY ===                                          (5/5)
@@ -34,9 +38,13 @@
 === SCENARIO 7 — week resize × account menu ===        (9/9)  [added 0.13]
 === SCENARIO 8 — cal-grid drag × account menu ===      (9/9)  [added 0.13]
 === SCENARIO 9 — 30 mixed cycles across all flows ===  (5/5)  [added 0.13]
+=== SCENARIO 10 — detail × menu × close menu ===       (6/6)  [added 0.14]
+=== SCENARIO 11 — detail × menu × T1 exception ===     (6/6)  [added 0.14]
+=== SCENARIO 12 — detail × ESC ===                     (2/4)  [added 0.14, surfaces defect]
+=== SCENARIO 13 — detail × menu × ESC ===              (3/5)  [added 0.14, surfaces defect]
 ```
 
-212 listener attach/detach operations logged across the run. Final listener count after every scenario is exactly **zero**.
+Listener attach/detach operations logged across the run. Final listener count after every scenario is exactly **zero** (or 1 for SC13.e, which leaves the global ESC handler attached — that's architecturally always-on in the real product).
 
 ---
 
@@ -110,6 +118,64 @@ All attach/detach paths are symmetric. All cleanup is called on every observed c
 - Real-browser pointer-capture semantics (`setPointerCapture` / `releasePointerCapture`) are stubbed in the harness. Any anomaly that depends on actual pointer capture behavior would not surface here.
 
 **0.13 T2 update:** the 2 remaining calendar flows (week resize, month-grid drag) ARE now individually tested against the account menu lifecycle. The 0.12 caveat "patterns are structurally identical to week-drag, so the conclusion is likely to extend" is replaced by direct verification (SC7, SC8). Plus SC9 stress-tests all three flows interleaved with the menu (30 mixed cycles, 4 flow types).
+
+## 0.14 — Detail overlay × account menu (added)
+
+T1 (PR #73) introduced a new runtime behavior on `openDetail`: an exception thrown after `body.style.overflow = 'hidden'` triggers a rollback (restore overflow + remove 'open' + rethrow). None of SC1–SC9 covered:
+
+- coexistence between `body.overflow`-locking overlays and other runtime interactions,
+- exception-rollback under coexistence,
+- ordering of cleanups when multiple subsystems touch document-level state.
+
+SC10–SC13 close that gap. Scope strict: `detailOverlay` × account menu only. No calendar. No other modals.
+
+### SC10 (PASS) — Open detail → open menu → close menu
+
+Confirms that closing the menu does NOT release the overflow lock. The overlay remains the sole owner of `body.style.overflow = 'hidden'`. The menu's two doc listeners detach cleanly on close, drag listeners (zero in this scenario) untouched.
+
+### SC11 (PASS) — Open detail → open menu → T1 exception path under coexistence
+
+Verifies the T1 catch path under coexistence:
+- A second `openDetail('track', 't1')` call is made while the menu is open
+- `hydrateDetailAudio` is stubbed to throw
+- T1's catch must: restore `body.style.overflow = ''`, remove the overlay's `open` class, rethrow the original error
+- The MENU's listeners must remain independently attached (they were attached before the second openDetail)
+- After the menu is then closed normally, all menu listeners cleanly detach
+
+All 6 assertions PASS. **The T1 rollback path is verified under coexistence.**
+
+### SC12 / SC13 (PARTIAL FAIL) — Detail × ESC
+
+The brief expected ESC to close `detailOverlay`. The harness shows it does NOT — see "Findings surfaced by 0.14" below.
+
+## Findings surfaced by 0.14
+
+### Defect: ESC does not close `detailOverlay`
+
+**Location:** `index.html` L17766
+**Mechanism:**
+```js
+const detailPane = document.getElementById('detailPane');
+if (detailPane && getComputedStyle(detailPane).display !== 'none' && typeof closeDetail === 'function') {
+  closeDetail();
+}
+```
+
+The global ESC keydown handler queries `getElementById('detailPane')`. **No element with id `detailPane` exists in `index.html`.** The actual overlay element is `<div class="detail-overlay" id="detailOverlay">` (L7383). The lookup always returns null, so the branch never fires. ESC currently does NOTHING for the detail view.
+
+**Impact on harness:**
+- SC12.b ("after ESC: overlay closed") — FAIL
+- SC12.c ("after ESC: body.overflow restored") — FAIL
+- SC13.c ("after ESC: overlay closed") — FAIL
+- SC13.d ("after ESC: body.overflow restored") — FAIL
+
+**Correction to prior documents:**
+- The 0.11 audit row that labeled `detailOverlay` "No doc listener attached" was correct in spirit (no doc listener TARGETING the actual id), but it didn't flag the legacy attempt-to-handle that uses the wrong id.
+- The 0.13 T4 finding (`docs/architecture/finding-0.13-t4-modal-handlers-already-exist.md`) said ESC works "for all 3 modals" — which is correct for `eventModal`, `roleModal`, `inspiModal`. It implied (but did not explicitly claim) that ESC works for the detail view too. The new SC12 verification shows that implication was wrong.
+
+**Fix:** a 1-word correction (`'detailPane'` → `'detailOverlay'`) plus removing the `getComputedStyle(...).display !== 'none'` check (which is unnecessary because the overlay's "open" state is the `.open` class, not display). Out of scope for this PR per "one concern per PR" — will be the immediately following PR.
+
+The 4 failing assertions remain in the harness until the fix lands. They serve as the regression test that proves the fix actually works.
 
 ---
 
