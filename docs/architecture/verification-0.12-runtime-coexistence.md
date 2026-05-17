@@ -14,8 +14,8 @@
 
 **Method:** the real lifecycle functions are extracted from `index.html` and executed in node against a mock `document` that tracks every `addEventListener` / `removeEventListener` call. The harness DOES exercise the real attach/detach paths; it does NOT exercise the visual drag (ghost positioning, drop-target detection) — those are not the subject of this verification.
 
-**Test script:** [verification-0.12-runtime-coexistence.js](./verification-0.12-runtime-coexistence.js)
-**Run:** `node docs/architecture/verification-0.12-runtime-coexistence.js`
+**Test script:** [verification-0.12-runtime-coexistence.cjs](./verification-0.12-runtime-coexistence.cjs)
+**Run:** `node docs/architecture/verification-0.12-runtime-coexistence.cjs`
 
 ---
 
@@ -214,7 +214,7 @@ The global ESC keydown handler queries `getElementById('detailPane')`. **No elem
 ## Reproducibility
 
 ```bash
-node docs/architecture/verification-0.12-runtime-coexistence.js
+node docs/architecture/verification-0.12-runtime-coexistence.cjs
 ```
 
 The script extracts the lifecycle functions directly from `index.html` at run time, so any change to those functions on `main` is automatically picked up on the next re-run. If the count of assertions or the listener deltas drift after a future change, this is the signal that coexistence has been affected.

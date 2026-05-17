@@ -11,7 +11,7 @@
      detection) — those are not the subject of the audit.
    - It verifies listener-count invariants at each step of each scenario.
 
-   Run with:  node docs/architecture/verification-0.12-runtime-coexistence.js
+   Run with:  node docs/architecture/verification-0.12-runtime-coexistence.cjs
    ============================================================================ */
 'use strict';
 

@@ -17944,5 +17944,18 @@ window.addEventListener('load', () => {
   setTimeout(maybeShowIosInstallBanner, 1800);
 });
 </script>
+
+<!-- ====================================================================
+     TypeScript migration entry point — Phase TS-0 (PR introducing the
+     Vite build pipeline). Currently this module is empty. Phase TS-1+
+     will progressively extract the inline <script> blocks above into
+     typed modules under /src/, each re-exposed on `window` for legacy
+     compatibility during the transition.
+
+     In production (after Vite build), this script tag's `src` is
+     rewritten by Vite to point at the bundled output under /assets/.
+     In dev (`npm run dev`), Vite serves /src/main.ts directly.
+     ==================================================================== -->
+<script type="module" src="/src/main.ts"></script>
 </body>
 </html>
