@@ -22,18 +22,18 @@
 | 2 | Calendar week resize (L13473-13573) | `_weekResize` closure owns same 4 doc listeners | `_cleanupWeekResize()` (L13561) | pointerup ✓ / pointercancel ✓ / ESC ✓ / pre-emptive on new pointerdown ✓ | None observed | **Symmetric** | Source pill height mutated inline (`pill.style.height`) AND `.cal-event-resizing` class added. Class swept; height not explicitly reset BUT `renderCalendar()` redraws on cancel | Same — cleanup sweep + re-render handles ghost state |
 | 3 | Calendar month-grid drag (L13691-13815) | `_calDrag` closure owns same 4 doc listeners | `_cleanupCalDrag()` (L13795) | pointerup ✓ / pointercancel ✓ / ESC ✓ / pre-emptive ✓ | None observed | **Symmetric** | Ghost in `document.body` + `.cal-event-dragging` class + `.cal-cell-droptarget` class. All 3 swept defensively | Same defense pattern as #1 |
 | 4 | Account menu 0.8 (L16587-16660) | `_accountMenuOutsideClick` (click, `{once:true}`) + `_accountMenuEscapeKey` (keydown) | `hideAccountMenu()` (L16616) — explicit `removeEventListener` for both | toggle re-click ✓ / outside-click ✓ / ESC ✓ | None observed; covered by 39 smoke assertions including 50-cycle stress | **Symmetric** — verified by smoke (listener delta = 0 after each cycle) | None | None |
-| 5 | `detailOverlay` (L16866-16930) | **No doc listener attached.** Lifecycle is imperative state mutation only | `closeDetail()` (L16924) | Every code path that calls `closeDetail()` restores `body.style.overflow` | **`openDetail` exceptions AFTER L16903** would strand `body.style.overflow = 'hidden'` until next `closeDetail` call. Probability low (only `scrollTo` + conditional hydrate between L16903 and end of fn). | N/A (no listeners) | `document.body.style.overflow = 'hidden'` on open / `''` on close. `window.scrollTo(0, 0)` on open (no restore). Full re-render via `renderView()` on close | The overlay itself can't survive its context. But the **body.overflow side-effect can outlive a partial open** if openDetail throws post-overflow-set |
+| 5 | `detailOverlay` (L16866-16930) | **No doc listener attached.** Lifecycle is imperative state mutation only | `closeDetail()` (L16924) | Every code path that calls `closeDetail()` restores `body.style.overflow` | An exception thrown by `openDetail()` AFTER L16903 (`body.style.overflow = 'hidden'`) and before a corresponding `closeDetail()` call would leave the lock in place. Runtime frequency of such an exception unknown — no observed occurrence during audit. | N/A (no listeners) | `document.body.style.overflow = 'hidden'` on open / `''` on close. `window.scrollTo(0, 0)` on open (no restore). Full re-render via `renderView()` on close | The overlay itself can't survive its context. The **body.overflow side-effect can outlive a partial open** if openDetail throws post-overflow-set |
 | 6 | `eventModal` (L13826-13889) | **No doc listener attached.** | `closeEventModal()` (L13887) — single line, removes CSS class | Any code that calls `closeEventModal()` | None — no global side-effect to leak | N/A | None | None |
 
 ---
 
-## Real problems observed today
+## Structural risks observed today
 
-| Severity | Issue | Location | Why it matters |
+| Risk | Structural description | Location | Observed occurrence |
 |---|---|---|---|
-| **Low** | `detailOverlay` can leak `body.style.overflow = 'hidden'` if `openDetail()` throws between L16903 and L16910 (the `scrollTo` / conditional `hydrate` block) | L16903-16910 | Low probability (those lines rarely throw). If it occurs, page scroll is locked until next `closeDetail()` call. No user-visible alert |
+| Potential stale `body.style.overflow='hidden'` state if `openDetail()` exits exceptionally before a corresponding `closeDetail()` call | `body.style.overflow` is set on L16903 inside `openDetail()`. Any exception thrown between L16903 and the eventual `closeDetail()` call (including exceptions in code paths L16904-16910 of `openDetail` itself: `scrollTo`, conditional `hydrateDetailAudio` / `hydrateDetailCover`) leaves the page scroll locked until a future `closeDetail()` is invoked. The cleanup path is symmetric only on the **non-exceptional** flow. | L16866-16930 | **None observed during this audit. Runtime frequency unknown.** |
 
-**That's it.** No other behaviorally-observable leak / asymmetry / cross-zone interaction was surfaced.
+No other structurally-observable leak / asymmetry / cross-zone interaction was surfaced.
 
 ---
 
@@ -92,7 +92,7 @@ Two **coexisting patterns** for runtime interaction lifecycle:
 - ❌ Does NOT recommend adding ESC to the 3 modal-CSS zones. UX gap ≠ architectural problem.
 - ❌ Does NOT recommend abstracting the 3 Calendar cleanup functions into a shared `runtimeScope()` helper. They've coexisted for a long time without divergence; "similarity" still doesn't equal "observed cost" (per 0.10 Axis 5).
 - ❌ Does NOT recommend migrating the Calendar drag/resize zones to a 0.8-style binder. The pre-0.x calendar pattern WORKS, and re-wiring it for symmetry-with-0.8 would risk regression in a high-value, often-used feature.
-- ❌ Does NOT recommend fixing the `detailOverlay` body.overflow leak path proactively. It is low-probability and would deserve a try/finally only if a real occurrence is reported.
+- ❌ Does NOT recommend fixing the `detailOverlay` body.overflow exception-asymmetry proactively. A try/finally would close the asymmetry; the audit records the structural observation without claiming a frequency or probability.
 
 ---
 
@@ -100,7 +100,7 @@ Two **coexisting patterns** for runtime interaction lifecycle:
 
 1. **The Calendar pattern is the legacy version of the 0.8 pattern.** If a future migration touches a third overlay/popover that needs document-listener lifecycle (e.g., a context menu, a tooltip with delayed dismiss, a dropdown), the choice will be: replicate Calendar pattern, replicate 0.8 pattern, or invent a third. The decision criterion (per 0.10 discipline) should be "what fits this specific interaction's semantics", not "what's consistent with the other binders".
 
-2. **`detailOverlay`'s body.overflow path is the one real leak risk in the audited set.** Fixing it would be a 2-line try/finally. The audit does not recommend doing it preemptively — record it for the day a real occurrence shows up.
+2. **`detailOverlay`'s body.overflow path is the only structural exception-asymmetry in the audited set.** The current cleanup is non-exceptional-flow-only. A try/finally on `openDetail()` would make it exception-symmetric. The audit does not recommend doing this preemptively — record the structural observation.
 
 3. **The `eventModal` / `roleModal` / `inspiModal` lack of ESC** is the only product-side UX gap the audit found. It is a product decision whether to add it, not an architecture decision. If it gets added, it should NOT be added as a "migration like 0.8" — it should be added as a feature, with its own justification.
 
