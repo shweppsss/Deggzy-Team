@@ -21,11 +21,13 @@
 
 ## Result
 
-**70 / 74 assertions PASS, 4 assertions FAIL — by design (the harness now surfaces a real defect).**
+**74 / 74 assertions PASS** (since 0.15 fix).
 
-The 4 failing assertions are in SC12 and SC13. They were written per the 0.14 brief expectation that **ESC closes `detailOverlay`**. The harness reveals that the legacy global ESC handler at `index.html` L17766 queries `document.getElementById('detailPane')` — an element ID that does not exist. The actual overlay element has id `detailOverlay`. Result: ESC currently does NOT close the detail view.
-
-This is a real product defect surfaced by the verification, not a test bug. The fix (a 1-word typo correction) is intentionally NOT included in this PR per the established discipline of "one concern per PR" — it will land in the next PR. The failing assertions remain in the harness until the fix lands, so any drift is detected.
+History:
+- 0.12: 31/31 PASS
+- 0.13 T2: 54/54 PASS (added week resize + cal-grid drag flows)
+- 0.14: 70/74 PASS — surfaced a real defect (ESC didn't close detailOverlay due to a `detailPane` / `detailOverlay` id mismatch at L17766)
+- 0.15: 74/74 PASS — defect fixed (1-word typo correction + removed unused `getComputedStyle` check)
 
 ```
 === SANITY ===                                          (5/5)
@@ -40,8 +42,8 @@ This is a real product defect surfaced by the verification, not a test bug. The 
 === SCENARIO 9 — 30 mixed cycles across all flows ===  (5/5)  [added 0.13]
 === SCENARIO 10 — detail × menu × close menu ===       (6/6)  [added 0.14]
 === SCENARIO 11 — detail × menu × T1 exception ===     (6/6)  [added 0.14]
-=== SCENARIO 12 — detail × ESC ===                     (2/4)  [added 0.14, surfaces defect]
-=== SCENARIO 13 — detail × menu × ESC ===              (3/5)  [added 0.14, surfaces defect]
+=== SCENARIO 12 — detail × ESC ===                     (4/4)  [added 0.14, fixed by 0.15]
+=== SCENARIO 13 — detail × menu × ESC ===              (5/5)  [added 0.14, fixed by 0.15]
 ```
 
 Listener attach/detach operations logged across the run. Final listener count after every scenario is exactly **zero** (or 1 for SC13.e, which leaves the global ESC handler attached — that's architecturally always-on in the real product).
@@ -173,9 +175,7 @@ The global ESC keydown handler queries `getElementById('detailPane')`. **No elem
 - The 0.11 audit row that labeled `detailOverlay` "No doc listener attached" was correct in spirit (no doc listener TARGETING the actual id), but it didn't flag the legacy attempt-to-handle that uses the wrong id.
 - The 0.13 T4 finding (`docs/architecture/finding-0.13-t4-modal-handlers-already-exist.md`) said ESC works "for all 3 modals" — which is correct for `eventModal`, `roleModal`, `inspiModal`. It implied (but did not explicitly claim) that ESC works for the detail view too. The new SC12 verification shows that implication was wrong.
 
-**Fix:** a 1-word correction (`'detailPane'` → `'detailOverlay'`) plus removing the `getComputedStyle(...).display !== 'none'` check (which is unnecessary because the overlay's "open" state is the `.open` class, not display). Out of scope for this PR per "one concern per PR" — will be the immediately following PR.
-
-The 4 failing assertions remain in the harness until the fix lands. They serve as the regression test that proves the fix actually works.
+**Fix (0.15):** corrected `getElementById('detailPane')` → `getElementById('detailOverlay')` at L17766, and replaced the `getComputedStyle(...).display !== 'none'` check with `classList.contains('open')` (the canonical signal for the overlay being open). All 4 previously-failing assertions now PASS — harness back to 74/74. The 4 assertions remain in the harness as regression tests.
 
 ---
 
