@@ -29,6 +29,7 @@ History:
 - 0.14: 70/74 PASS — surfaced a real defect (ESC didn't close detailOverlay due to a `detailPane` / `detailOverlay` id mismatch at L17766)
 - 0.15: 74/74 PASS — defect fixed (1-word typo correction + removed unused `getComputedStyle` check)
 - 0.16: 80/80 PASS — added SC14/15/16: each of eventModal / inspiModal / roleModal closes correctly on ESC (converts the 0.13 T4 trust into a runtime invariant)
+- 0.17a: 89/89 PASS — added SC17/18/18b/18c: ESC respects focused-input/textarea/contentEditable (the global handler blurs first, doesn't close the modal until next ESC). Pins a fragile global behavior contract.
 
 ```
 === SANITY ===                                          (5/5)
@@ -48,6 +49,10 @@ History:
 === SCENARIO 14 — eventModal × ESC ===                 (2/2)  [added 0.16]
 === SCENARIO 15 — inspiModal × ESC ===                 (2/2)  [added 0.16]
 === SCENARIO 16 — roleModal × ESC ===                  (2/2)  [added 0.16]
+=== SCENARIO 17 — ESC with focused input ===           (4/4)  [added 0.17a]
+=== SCENARIO 18 — ESC without focused input ===        (1/1)  [added 0.17a]
+=== SCENARIO 18b — ESC with focused textarea ===       (2/2)  [added 0.17a]
+=== SCENARIO 18c — ESC with contentEditable ===        (2/2)  [added 0.17a]
 ```
 
 Listener attach/detach operations logged across the run. Final listener count after every scenario is exactly **zero** (or 1 for SC13.e, which leaves the global ESC handler attached — that's architecturally always-on in the real product).

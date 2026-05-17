@@ -863,6 +863,86 @@ fireKey('Escape');
 tr('SC16.b after ESC: roleModal closed', roleModalEl._state.open === false);
 uninstallGlobalEsc();
 
+// ===========================================================================
+// 0.17a — Global ESC + focused-input contract
+//
+// The global ESC handler at L17740 has a focus-respect clause:
+//   if (active.tagName === 'INPUT' || 'TEXTAREA' || isContentEditable):
+//     active.blur(); return;
+// This means: ESC pressed while typing in an input does NOT close the modal
+// — it first blurs the input. The user must press ESC again to close.
+//
+// This is a fragile contract: if someone refactors the focus check (or
+// inverts the early return), inputs become uncloseable-via-ESC OR modals
+// become un-closeable while inputs exist anywhere on the page. SC17/SC18
+// pin the contract.
+// ===========================================================================
+
+// Helper: simulate a focused input
+function setActiveInput(tagName, isContentEditable) {
+  const el = {
+    tagName: (tagName || 'INPUT').toUpperCase(),
+    isContentEditable: !!isContentEditable,
+    _blurred: false,
+    blur() { this._blurred = true; document.activeElement = null; },
+  };
+  document.activeElement = el;
+  return el;
+}
+
+// ---------------------------------------------------------------------------
+// SCENARIO 17 — ESC with focused input → blur, no modal close
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 17 — ESC with focused input does NOT close modals ===');
+resetState();
+installGlobalEsc();
+eventModalEl.classList.add('open');
+const focusedInput = setActiveInput('INPUT');
+eq('SC17.a setup: modal open, input focused', { open: eventModalEl._state.open, focused: document.activeElement && document.activeElement.tagName }, { open: true, focused: 'INPUT' });
+fireKey('Escape');
+tr('SC17.b after ESC: input was blurred', focusedInput._blurred === true);
+tr('SC17.c after ESC: modal STILL open (focus-respect contract)', eventModalEl._state.open === true);
+eq('SC17.d activeElement cleared by blur', document.activeElement, null);
+uninstallGlobalEsc();
+eventModalEl.classList.remove('open');
+
+// ---------------------------------------------------------------------------
+// SCENARIO 18 — ESC after blur (or never-focused) → modal closes
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 18 — ESC with no focused input DOES close modal ===');
+resetState();
+installGlobalEsc();
+eventModalEl.classList.add('open');
+document.activeElement = null;  // explicit: no input focused
+fireKey('Escape');
+tr('SC18.a after ESC (no focus): modal closed', eventModalEl._state.open === false);
+uninstallGlobalEsc();
+
+// Same check for TEXTAREA (per the handler's check), to verify the regex
+// isn't INPUT-only.
+console.log('\n=== SCENARIO 18b — ESC with focused TEXTAREA also blurs ===');
+resetState();
+installGlobalEsc();
+roleModalEl.classList.add('open');
+const focusedTextarea = setActiveInput('TEXTAREA');
+fireKey('Escape');
+tr('SC18b.a textarea blurred', focusedTextarea._blurred === true);
+tr('SC18b.b roleModal STILL open', roleModalEl._state.open === true);
+uninstallGlobalEsc();
+roleModalEl.classList.remove('open');
+
+// And isContentEditable
+console.log('\n=== SCENARIO 18c — ESC with contentEditable also blurs ===');
+resetState();
+installGlobalEsc();
+inspiModalEl.classList.add('open');
+const focusedCE = setActiveInput('DIV', true);
+fireKey('Escape');
+tr('SC18c.a contentEditable element blurred', focusedCE._blurred === true);
+tr('SC18c.b inspiModal STILL open', inspiModalEl._state.open === true);
+uninstallGlobalEsc();
+inspiModalEl.classList.remove('open');
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------
