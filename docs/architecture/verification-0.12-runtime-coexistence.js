@@ -1185,6 +1185,140 @@ eq('SC24.c plain digit still works after modifier tests', pinPressCalls, ['5']);
 
 uninstallPinKeyboard();
 
+// ===========================================================================
+// 0.21 — Interaction interruption scenarios
+//
+// Tests cross-state transitions: what happens when one runtime interaction
+// is INTERRUPTED by another that mutates global state. This is the class
+// of bug that typically surfaces only after a feature is added downstream,
+// when no one re-tests the existing interaction matrix. Harness pins them
+// pre-emptively.
+//
+// Scope strict: only the harness extension. Real fns extracted as before.
+// If any scenario FAILs, it's a real defect → separate PR (like 0.14→0.15).
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// SC25 — openDetail() called twice in a row
+//   Invariants: no listener duplication, body.overflow consistent, overlay
+//   open exactly once at end (subsequent classList.add('open') is a noop).
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 25 — openDetail called twice ===');
+resetState();
+resetDetailState();
+const listenersBefore = JSON.stringify(listenerCounts());
+F.openDetail('event', 'evt-A');
+const afterFirst = {
+  open: detailOverlayState.open,
+  overflow: document.body.style.overflow,
+  listeners: JSON.stringify(listenerCounts()),
+};
+F.openDetail('event', 'evt-B');
+const afterSecond = {
+  open: detailOverlayState.open,
+  overflow: document.body.style.overflow,
+  listeners: JSON.stringify(listenerCounts()),
+};
+eq('SC25.a listeners stable across both calls', afterFirst.listeners, listenersBefore);
+eq('SC25.b listeners still stable after 2nd call', afterSecond.listeners, listenersBefore);
+tr('SC25.c overlay open after 1st', afterFirst.open === true);
+tr('SC25.d overlay still open after 2nd (idempotent)', afterSecond.open === true);
+eq('SC25.e body.overflow consistent after 1st', afterFirst.overflow, 'hidden');
+eq('SC25.f body.overflow consistent after 2nd', afterSecond.overflow, 'hidden');
+
+// ---------------------------------------------------------------------------
+// SC26 — menu open → openDetail → ESC
+//   Both menu and detail get closed by one ESC press. The menu's own
+//   _accountMenuEscapeKey fires (closes menu); the global ESC routing fires
+//   too and reaches the detail branch (no other modals open) → closeDetail.
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 26 — menu open → openDetail → ESC ===');
+resetState();
+resetDetailState();
+installGlobalEsc();
+clickChip();  // menu open: 1 click + 1 keydown
+F.openDetail('event', 'evt-C');  // detail open: body.overflow=hidden + overlay.open
+eq('SC26.a setup: menu open + detail open + global ESC armed',
+   { menu: !menuEl.hidden, detail: detailOverlayState.open, overflow: document.body.style.overflow, listeners: listenerCounts() },
+   { menu: true, detail: true, overflow: 'hidden', listeners: { click: 1, keydown: 2, pointermove: 0, pointerup: 0, pointercancel: 0 } });
+
+fireKey('Escape');
+
+tr('SC26.b menu closed', menuEl.hidden === true);
+tr('SC26.c overlay closed', detailOverlayState.open === false);
+eq('SC26.d body.overflow restored', document.body.style.overflow, '');
+// keydown=1 = the global ESC routing fn (always-on while installed); menu's
+// keydown was removed by hideAccountMenu; click was the menu's outside-click
+// listener — also removed.
+eq('SC26.e doc listeners: only the global ESC routing fn remains',
+   listenerCounts(),
+   { click: 0, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0 });
+uninstallGlobalEsc();
+
+// ---------------------------------------------------------------------------
+// SC27 — drag active → openDetail (mid-drag) → drag cleanup
+//   Interruption: detailOverlay opens while a drag is in progress. The
+//   drag listeners must NOT leak when the drag eventually ends, and the
+//   detail state must be consistent.
+//   NOTE: ending the drag via pointerup also CALLS openDetail (the legacy
+//   pointerup handler routes click-like pointer-ups to openDetail). So the
+//   final state has detail open from BOTH paths. SC25 already verified
+//   the double-open is idempotent.
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 27 — drag active → openDetail → drag cleanup ===');
+resetState();
+resetDetailState();
+const pill27 = makePill('evt-D');
+startWeekDrag(pill27, 27);
+eq('SC27.a drag started: 4 listeners + no detail', { open: detailOverlayState.open, listeners: listenerCounts() },
+   { open: false, listeners: { click: 0, keydown: 1, pointermove: 1, pointerup: 1, pointercancel: 1 } });
+
+// Open detail mid-drag (simulates: user opened detail via some other UI
+// while a drag is in flight — e.g., realtime sync or programmatic open)
+F.openDetail('event', 'evt-other');
+eq('SC27.b mid-drag openDetail: detail open + body locked, drag listeners INTACT',
+   { open: detailOverlayState.open, overflow: document.body.style.overflow, listeners: listenerCounts() },
+   { open: true, overflow: 'hidden', listeners: { click: 0, keydown: 1, pointermove: 1, pointerup: 1, pointercancel: 1 } });
+
+// End the drag
+firePointerUp(27);
+eq('SC27.c after drag end: all drag listeners cleaned, detail still consistent',
+   { open: detailOverlayState.open, overflow: document.body.style.overflow, listeners: listenerCounts() },
+   { open: true, overflow: 'hidden', listeners: { click: 0, keydown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 } });
+tr('SC27.d _weekDrag is null after cleanup', getWeekDrag() === null);
+
+// ---------------------------------------------------------------------------
+// SC28 — modal open → detailOverlay open → ESC
+//   The global ESC handler routes through eventModal/inspiModal/roleModal
+//   BEFORE reaching the detail branch. So with eventModal open AND detail
+//   open, one ESC press closes only eventModal. A SECOND ESC press then
+//   reaches the detail branch and closes the overlay.
+//   This pins the close-order contract. If the if-branches in the global
+//   handler are reordered, the order changes, and this scenario catches it.
+// ---------------------------------------------------------------------------
+console.log('\n=== SCENARIO 28 — modal open + detail open + ESC routing order ===');
+resetState();
+resetDetailState();
+installGlobalEsc();
+eventModalEl.classList.add('open');
+F.openDetail('event', 'evt-E');
+eq('SC28.a setup: eventModal open + detail open + body locked',
+   { event: eventModalEl._state.open, detail: detailOverlayState.open, overflow: document.body.style.overflow },
+   { event: true, detail: true, overflow: 'hidden' });
+
+// First ESC: should close ONLY eventModal (per the handler's branch order)
+fireKey('Escape');
+eq('SC28.b 1st ESC: eventModal closed, detail STILL open, overflow STILL locked',
+   { event: eventModalEl._state.open, detail: detailOverlayState.open, overflow: document.body.style.overflow },
+   { event: false, detail: true, overflow: 'hidden' });
+
+// Second ESC: now reaches the detail branch (no modals open) → closes
+fireKey('Escape');
+eq('SC28.c 2nd ESC: detail closed, overflow restored',
+   { event: eventModalEl._state.open, detail: detailOverlayState.open, overflow: document.body.style.overflow },
+   { event: false, detail: false, overflow: '' });
+uninstallGlobalEsc();
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------
