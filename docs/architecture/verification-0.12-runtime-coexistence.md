@@ -30,6 +30,7 @@ History:
 - 0.15: 74/74 PASS — defect fixed (1-word typo correction + removed unused `getComputedStyle` check)
 - 0.16: 80/80 PASS — added SC14/15/16: each of eventModal / inspiModal / roleModal closes correctly on ESC (converts the 0.13 T4 trust into a runtime invariant)
 - 0.17a: 89/89 PASS — added SC17/18/18b/18c: ESC respects focused-input/textarea/contentEditable (the global handler blurs first, doesn't close the modal until next ESC). Pins a fragile global behavior contract.
+- 0.19: 96/96 PASS — added SC19/20/21: outside-click delegate at L17767 routes eventModal/inspiModal backdrop clicks, but NOT roleModal (which uses a separate inline mechanism). Verified explicitly so a future homogenization refactor doesn't silently break either path.
 
 ```
 === SANITY ===                                          (5/5)
@@ -53,6 +54,9 @@ History:
 === SCENARIO 18 — ESC without focused input ===        (1/1)  [added 0.17a]
 === SCENARIO 18b — ESC with focused textarea ===       (2/2)  [added 0.17a]
 === SCENARIO 18c — ESC with contentEditable ===        (2/2)  [added 0.17a]
+=== SCENARIO 19 — eventModal × backdrop click ===      (3/3)  [added 0.19]
+=== SCENARIO 20 — inspiModal × backdrop click ===      (3/3)  [added 0.19]
+=== SCENARIO 21 — delegate does NOT route roleModal == (1/1)  [added 0.19]
 ```
 
 Listener attach/detach operations logged across the run. Final listener count after every scenario is exactly **zero** (or 1 for SC13.e, which leaves the global ESC handler attached — that's architecturally always-on in the real product).
