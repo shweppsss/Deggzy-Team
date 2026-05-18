@@ -7599,144 +7599,25 @@ document.addEventListener('click', (e) => {
    See /src/lib/render-utils.ts for the canonical implementation.
    ============================================================================ */
 
-/* ============================
-   MINI PLAYER — pure addition, no audio-logic changes
-   ============================ */
-const MiniPlayer = (() => {
-  let el, audio, fill, playBtn, coverBtn, titleEl, subEl, closeBtn;
-  let currentTrackId = null;
-  let initialized = false;
-  function init() {
-    if (initialized) return;
-    el = document.getElementById('miniPlayer');
-    if (!el) return;
-    audio = document.getElementById('miniPlayerAudio');
-    fill = document.getElementById('miniPlayerFill');
-    playBtn = document.getElementById('miniPlayerPlay');
-    coverBtn = document.getElementById('miniPlayerCover');
-    titleEl = document.getElementById('miniPlayerTitle');
-    subEl = document.getElementById('miniPlayerSub');
-    closeBtn = document.getElementById('miniPlayerClose');
-    if (!audio || !playBtn) return;
-    // Wire the audio element to the global AudioStore. All pill UI (catalogue,
-    // detail, mini-player) reflects state from the store rather than each
-    // listener reaching into the DOM independently.
-    if (typeof _hookAudioToStore === 'function') _hookAudioToStore(audio);
-    playBtn.innerHTML = icon('play', 18);
-    closeBtn.innerHTML = icon('close', 14);
-    // Buttons inside the pill stop propagation so the surrounding "open detail"
-    // tap area doesn't fire on a play/pause/close press.
-    playBtn.addEventListener('click', (e) => { e.stopPropagation(); audio.paused ? audio.play() : audio.pause(); });
-    closeBtn.addEventListener('click', (e) => { e.stopPropagation(); hide(); });
-    coverBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (currentTrackId && typeof openDetail === 'function') openDetail('track', currentTrackId);
-    });
-    // Tapping anywhere else on the pill (the title/sub area especially) opens
-    // the detail. Same intent as Apple Music's "tap pill to expand to Now Playing".
-    el.addEventListener('click', () => {
-      if (currentTrackId && typeof openDetail === 'function') openDetail('track', currentTrackId);
-    });
-    audio.addEventListener('play', () => { playBtn.innerHTML = icon('pause', 18); });
-    audio.addEventListener('pause', () => { playBtn.innerHTML = icon('play', 18); });
-    audio.addEventListener('ended', () => { playBtn.innerHTML = icon('play', 18); fill.style.width = '0%'; });
-    audio.addEventListener('timeupdate', () => {
-      if (!audio.duration) return;
-      fill.style.width = ((audio.currentTime / audio.duration) * 100).toFixed(2) + '%';
-    });
-    // Tap the scrubber to seek. The hit area is the whole scrubber wrapper so
-    // even a 4px-tall fill is comfortably reachable. We pause→seek→resume to
-    // avoid the brief blip iOS gives if you reposition during active playback.
-    const scrubberWrap = el.querySelector('.mini-player-scrubber');
-    if (scrubberWrap) {
-      scrubberWrap.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (!audio.duration || isNaN(audio.duration)) return;
-        const rect = scrubberWrap.getBoundingClientRect();
-        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-        const wasPlaying = !audio.paused;
-        if (wasPlaying) audio.pause();
-        try { audio.currentTime = ratio * audio.duration; } catch (err) {}
-        if (wasPlaying) audio.play().catch(() => {});
-      });
-    }
-    // Media Session API — surfaces title/artist/cover on the iOS lock screen,
-    // Control Center, Apple Watch, and CarPlay. Hardware play/pause keys from
-    // AirPods / Bluetooth headphones route to the same handlers as the on-screen
-    // buttons. mediaSession is undefined on older Safari — guarded for safety.
-    if ('mediaSession' in navigator) {
-      try {
-        navigator.mediaSession.setActionHandler('play',  () => { audio.play().catch(() => {}); });
-        navigator.mediaSession.setActionHandler('pause', () => { audio.pause(); });
-        navigator.mediaSession.setActionHandler('seekbackward', (details) => {
-          const skip = (details && details.seekOffset) || 10;
-          try { audio.currentTime = Math.max(0, audio.currentTime - skip); } catch (e) {}
-        });
-        navigator.mediaSession.setActionHandler('seekforward', (details) => {
-          const skip = (details && details.seekOffset) || 10;
-          try { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + skip); } catch (e) {}
-        });
-        navigator.mediaSession.setActionHandler('seekto', (details) => {
-          if (details && typeof details.seekTime === 'number') {
-            try { audio.currentTime = details.seekTime; } catch (e) {}
-          }
-        });
-      } catch (e) { /* no-op — browser without all action handlers */ }
-    }
-    initialized = true;
-  }
-  function show(track, audioUrl, coverUrl) {
-    init();
-    if (!el || !track) return;
-    const isNewTrack = currentTrackId !== track.id;
-    currentTrackId = track.id;
-    const title = track.name || 'Sans titre';
-    const statusFn = typeof statusLabel === 'function' ? statusLabel : (() => '');
-    const subtitle = [statusFn(track.status), track.feat].filter(Boolean).join(' · ') || 'Noname';
-    titleEl.textContent = title;
-    subEl.textContent = subtitle;
-    coverBtn.style.backgroundImage = coverUrl ? `url('${coverUrl}')` : 'none';
-    // Notify the store BEFORE swapping src so any pill in the DOM transitions
-    // its "active" highlight instantly, and the previous active pill resets to
-    // 0% / play-icon without waiting for the new audio events to fire.
-    if (isNewTrack && typeof _setAudioState === 'function') {
-      _setAudioState({ trackId: track.id, currentTime: 0, duration: 0, loading: true });
-    }
-    if (audio.src !== audioUrl) audio.src = audioUrl;
-    el.hidden = false;
-    // Surface metadata to the iOS lock screen / Control Center / Apple Watch /
-    // CarPlay. The cover is a blob: URL inside our origin → it works as an
-    // artwork source. Falls back to a single 96×96 entry if no cover yet.
-    if ('mediaSession' in navigator) {
-      try {
-        const artwork = coverUrl ? [
-          { src: coverUrl, sizes: '96x96',   type: 'image/png' },
-          { src: coverUrl, sizes: '192x192', type: 'image/png' },
-          { src: coverUrl, sizes: '512x512', type: 'image/png' },
-        ] : [];
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title,
-          artist: 'Degzzy',
-          album: subtitle,
-          artwork,
-        });
-      } catch (e) { /* MediaMetadata unsupported on older browsers */ }
-    }
-    audio.play().catch(() => {/* user gesture required on some browsers */});
-  }
-  function hide() {
-    if (!el) return;
-    audio.pause();
-    audio.src = '';
-    el.hidden = true;
-    currentTrackId = null;
-    // Clear the store so every pill in the DOM reverts to inactive/0%.
-    if (typeof _setAudioState === 'function') {
-      _setAudioState({ trackId: null, isPlaying: false, currentTime: 0, duration: 0, loading: false });
-    }
-  }
-  return { init, show, hide };
-})();
+/* ============================================================================
+   MiniPlayer — EXTRACTED in Phase TS-5 to /src/features/mini-player.ts.
+
+   The inline IIFE that used to live here is now a typed TypeScript module
+   loaded by /src/main.ts and re-attached as a bare global on `window`
+   (matching the historical surface where it was declared at module scope
+   via `const MiniPlayer = (() => {...})()`). All inline call sites
+   below — `MiniPlayer.show(track, url, cover)` / `MiniPlayer.hide()` —
+   keep working unchanged.
+
+   The TS version imports `icon()` directly from /src/lib/render-utils so
+   the icon dependency is now a build-time graph edge, not a runtime
+   global. Other dependencies (`_hookAudioToStore`, `_setAudioState`,
+   `statusLabel`, `openDetail`) remain inline-defined and are accessed
+   via typed `window` accessors with `typeof` guards — identical fallback
+   semantics to the inline IIFE.
+
+   See /src/features/mini-player.ts for the canonical implementation.
+   ============================================================================ */
 
 /* ============================
    FILE UPLOAD LIMIT — Centralized cap

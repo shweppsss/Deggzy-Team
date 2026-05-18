@@ -12,8 +12,9 @@
 //   TS-1  ✓  App.Runtime → /src/core/runtime.ts
 //   TS-2  ✓  App.Boot → /src/core/boot.ts
 //   TS-3  ✓  App.Instrumentation → /src/core/instrumentation.ts
-//   TS-4  ← current PR: render utilities → /src/lib/render-utils.ts
-//   TS-5+    feature modules (MiniPlayer, auth, calendar, detail, modals)
+//   TS-4  ✓  render utilities → /src/lib/render-utils.ts
+//   TS-5  ← current PR: MiniPlayer → /src/features/mini-player.ts
+//   TS-6+    business domains (auth, calendar, detail overlay, modals)
 //   TS-final HTML decomposition
 // ============================================================================
 
@@ -29,6 +30,7 @@ import {
   parseDate,
   isFutureOrToday,
 } from './lib/render-utils';
+import { MiniPlayer } from './features/mini-player';
 
 // Augment the global Window type so the legacy code that references
 // `window.App.X.*` and the bare-global helpers (icon, parseDate, etc.)
@@ -52,6 +54,7 @@ declare global {
     emptyState: typeof emptyState;
     parseDate: typeof parseDate;
     isFutureOrToday: typeof isFutureOrToday;
+    MiniPlayer: typeof MiniPlayer;
   }
 }
 
@@ -81,3 +84,9 @@ window.EMPTY_ART = EMPTY_ART;
 window.emptyState = emptyState;
 window.parseDate = parseDate;
 window.isFutureOrToday = isFutureOrToday;
+
+// MiniPlayer was historically `const MiniPlayer = (() => {...})()` at
+// module scope inside the inline <script>, so it lives on `window` as a
+// bare global. Inline call sites (`MiniPlayer.show(...)`) keep working
+// unchanged after this assignment.
+window.MiniPlayer = MiniPlayer;
