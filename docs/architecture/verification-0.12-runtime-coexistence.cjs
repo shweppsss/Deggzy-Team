@@ -181,6 +181,28 @@ global.MutationObserver = function () { return { observe() {}, disconnect() {} }
 global.IntersectionObserver = function () { return { observe() {}, disconnect() {} }; };
 
 // ---------------------------------------------------------------------------
+// TS-6 — mirror state + helper stubs onto global.window for TS modules.
+// ---------------------------------------------------------------------------
+// The legacy inline functions resolved bare identifiers like `state.events`
+// or `detailEventHTML(e)` against the Node `global` object (function decls
+// hoist to global). TS modules use `window.state` / `window.detailEventHTML`
+// — and in Node, `global.window` is a SEPARATE mock object, so we must
+// mirror the stubs onto it explicitly. Without this mirroring, the TS
+// `resolveKind()` returns null early because `window.detailEventHTML`
+// looks undefined, and SC10–SC30 fail.
+global.window.state = global.state;
+global.window.PHASES = global.PHASES || {};
+global.window.typeLabel = global.typeLabel;
+global.window.detailEventHTML = global.detailEventHTML;
+global.window.detailTrackHTML = global.detailTrackHTML;
+global.window.detailTodoHTML = global.detailTodoHTML;
+global.window.detailInspiHTML = global.detailInspiHTML;
+global.window.detailMemberHTML = global.detailMemberHTML;
+global.window.detailPhaseHTML = global.detailPhaseHTML;
+global.window.renderView = global.renderView;
+global.window.scrollTo = global.window.scrollTo || (() => {});
+
+// ---------------------------------------------------------------------------
 // Function extraction from index.html
 // ---------------------------------------------------------------------------
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'index.html'), 'utf8');
@@ -225,8 +247,10 @@ const sources = [
   extractFn('_accountMenuOutsideClick'),
   extractFn('hideAccountMenu'),
   // 0.14 — detailOverlay lifecycle (T1 added try/catch on openDetail)
-  extractFn('openDetail'),
-  extractFn('closeDetail'),
+  // TS-6 — openDetail / closeDetail were MOVED to /src/features/detail/lifecycle.ts.
+  // They are bundled via esbuild below (see __DETAIL_LIFECYCLE_BUNDLE__) and
+  // re-injected into the harness scope as bare functions. They no longer
+  // appear in index.html so extractFn() would throw on them.
   // 0.16 — close functions for the 3 other modals, so the global ESC
   // routing can drive them through their real close path (not a stub).
   extractFn('closeEventModal'),
@@ -295,6 +319,45 @@ sources.push(pinKeyboardNamedFn);
 // because the calendar fns expect it as a module-level binding.
 let _weekDrag = null;
 global._weekDrag = _weekDrag;
+
+// ---------------------------------------------------------------------------
+// TS-6 — load openDetail / closeDetail from /src/features/detail/lifecycle.ts
+// ---------------------------------------------------------------------------
+// The lifecycle functions used to be inline in index.html; from TS-6 onward
+// they are a typed TypeScript module. We bundle the module via esbuild's
+// in-process API and inject the resulting CJS into the harness scope so
+// existing SC10–SC13 / SC25–SC28 assertions keep exercising the SAME real
+// implementation — just imported through the build graph rather than scraped
+// from index.html.
+const esbuild = require('esbuild');
+const detailBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'features', 'detail', 'lifecycle.ts')],
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  target: 'es2020',
+  write: false,
+  logLevel: 'silent',
+});
+const detailCjs = detailBundle.outputFiles[0].text;
+// Eval into an isolated `module.exports` so we don't pollute the harness.
+// The bundled code references `window.*` which is `global.window` in node —
+// our existing mock document/window setup provides those bindings.
+const _detailMod = { exports: {} };
+(function (module, exports, require) {
+  // eslint-disable-next-line no-eval
+  eval(detailCjs);
+})(_detailMod, _detailMod.exports, require);
+// Bundle output shape: `lifecycle_exports = { openDetail, closeDetail, bindDetailClose }`
+// is assigned to `module.exports.openDetail` etc. via __toCommonJS helper.
+const _detailExports = _detailMod.exports;
+if (typeof _detailExports.openDetail !== 'function' || typeof _detailExports.closeDetail !== 'function') {
+  throw new Error('TS-6 bundle did not yield openDetail / closeDetail exports — got: ' + Object.keys(_detailExports).join(','));
+}
+// Make them globals so the harness eval scope below picks them up by name.
+global.openDetail = _detailExports.openDetail;
+global.closeDetail = _detailExports.closeDetail;
+global.bindDetailClose = _detailExports.bindDetailClose;
 
 // Wrap in IIFE so the extracted functions live in a scope we control.
 // We use `var` declarations explicitly (the extracted source uses `function`
@@ -757,15 +820,18 @@ eq('SC11.a setup ok', { open: detailOverlayState.open, overflow: document.body.s
    { open: true, overflow: 'hidden', listeners: { click: 1, keydown: 1, pointermove: 0, pointerup: 0, pointercancel: 0 } });
 
 // Now make a SECOND openDetail call that will throw mid-flow.
-// We make hydrateDetailAudio throw on the next call to simulate an IDB
-// failure on a track open. This exercises the T1 catch path.
-const originalHydrate = global.hydrateDetailAudio;
-global.hydrateDetailAudio = () => { throw new Error('idb-down'); };
-// Re-eval openDetail so the new throwing stub is captured by its closure
-// (the extracted fn captured global at eval time; safer to re-eval).
+// TS-6 NOTE: we used to patch `global.hydrateDetailAudio` to throw, but
+// since the lifecycle TS module imports hydrate from `./hydrate` at bundle
+// time, that import binding cannot be swapped via globals. We instead patch
+// `window.scrollTo` which is ALSO inside the same try-block in openDetail
+// (right before the hydrate calls). The T1 rollback contract under test is
+// identical — "if anything in the post-lock try-block throws synchronously,
+// overflow restored + .open removed + rethrow."
+const originalScrollTo = global.window.scrollTo;
+global.window.scrollTo = () => { throw new Error('idb-down'); };
 let caught = null;
 try { F.openDetail('track', 't1'); } catch (e) { caught = e.message; }
-global.hydrateDetailAudio = originalHydrate;
+global.window.scrollTo = originalScrollTo;
 
 tr('SC11.b exception rethrown from openDetail', caught === 'idb-down');
 eq('SC11.c body.overflow RESTORED by T1 catch', document.body.style.overflow, '');

@@ -16380,104 +16380,33 @@ function resetBudget() {
 /* ============================
    DETAIL PAGES
    ============================ */
-function openDetail(kind, id) {
-  let html = '';
-  let kindLabel = '';
-  if (kind === 'event') {
-    const e = state.events.find(x => x.id === id);
-    if (!e) return;
-    kindLabel = typeLabel(e.type);
-    html = detailEventHTML(e);
-  } else if (kind === 'track') {
-    const t = state.tracks.find(x => x.id === id);
-    if (!t) return;
-    kindLabel = 'Morceau';
-    html = detailTrackHTML(t);
-  } else if (kind === 'todo') {
-    const t = state.todos.find(x => x.id === id);
-    if (!t) return;
-    kindLabel = 'Tâche · ' + t.cat;
-    html = detailTodoHTML(t);
-  } else if (kind === 'inspi') {
-    const i = state.inspirations.find(x => x.id === id) || state.inspirations[id];
-    if (!i) return;
-    kindLabel = 'Inspiration · ' + (i.category || 'Autre');
-    html = detailInspiHTML(i);
-  } else if (kind === 'member') {
-    const m = state.team.find(x => x.id === id);
-    if (!m) return;
-    kindLabel = 'Équipe';
-    html = detailMemberHTML(m);
-  } else if (kind === 'phase') {
-    const p = PHASES[id];
-    if (!p) return;
-    kindLabel = 'Phase stratégique';
-    html = detailPhaseHTML(p, id);
-  }
-  document.getElementById('detailKind').textContent = kindLabel;
-  document.getElementById('detailBody').innerHTML = html;
-  document.getElementById('detailOverlay').classList.add('open');
-  document.body.style.overflow = 'hidden';
-  // 0.18 — wire the close buttons (back button + the kind-specific "Fermer"
-  // button rendered into detailBody). Idempotent; safe to call on every open.
-  if (typeof bindDetailClose === 'function') bindDetailClose();
-  // Anything after the scroll lock that may throw must be rolled back so the
-  // lock doesn't outlive a partially-opened overlay (0.11 audit finding: the
-  // only exception-asymmetric path in the runtime lifecycle matrix).
-  try {
-    window.scrollTo(0, 0);
-    // Hydrate IDB audio + cover if it's a track detail
-    if (kind === 'track') {
-      hydrateDetailAudio(id);
-      hydrateDetailCover(id);
-    }
-  } catch (e) {
-    document.body.style.overflow = '';
-    document.getElementById('detailOverlay').classList.remove('open');
-    throw e;
-  }
-}
+/* ============================================================================
+   Detail overlay lifecycle — EXTRACTED in Phase TS-6 to /src/features/detail/.
 
-async function hydrateDetailCover(trackId) {
-  const t = state.tracks.find(x => x.id === trackId);
-  if (!t || !t.idbCover) return;
-  const url = await getTrackCoverUrl(trackId);
-  const el = document.querySelector(`[data-cover-for-detail="${trackId}"]`);
-  if (el && url) {
-    el.style.backgroundImage = `url('${url}')`;
-    el.style.backgroundSize = 'cover';
-    el.style.backgroundPosition = 'center';
-    el.style.display = 'block';
-  }
-}
+   The inline `openDetail()`, `closeDetail()`, `bindDetailClose()`,
+   `hydrateDetailAudio()`, `hydrateDetailCover()` functions are now typed
+   TS modules under `/src/features/detail/`:
+     - lifecycle.ts → openDetail / closeDetail / bindDetailClose
+     - hydrate.ts   → hydrateDetailAudio / hydrateDetailCover
+     - types.ts     → DetailKind union
+     - index.ts     → barrel
 
-// 0.18 — bind the close buttons in the detail overlay (1 static back
-// button in the header + up to 5 dynamic "Fermer" buttons rendered into
-// detailBody by detailEventHTML / detailTrackHTML / etc.). Idempotent
-// via data-detail-close-bound. Called from inside openDetail() after
-// the innerHTML write — the natural mount point for the dynamic buttons;
-// the static back button gets caught on first call and is then skipped.
-function bindDetailClose() {
-  var R = (typeof window !== 'undefined' && window.App && window.App.Runtime) || null;
-  var buttons = R
-    ? R.qsa('[data-detail-close]')
-    : Array.from(document.querySelectorAll('[data-detail-close]'));
-  buttons.forEach(function (btn) {
-    if (btn.dataset.detailCloseBound === '1') return;
-    btn.addEventListener('click', function () {
-      if (typeof closeDetail === 'function') closeDetail();
-    });
-    btn.dataset.detailCloseBound = '1';
-  });
-}
+   Re-attached on `window` by /src/main.ts so inline call sites
+   (`openDetail('track', id)`, `bindDetailClose()`, etc.) keep working
+   unchanged.
 
-function closeDetail() {
-  document.getElementById('detailOverlay').classList.remove('open');
-  document.body.style.overflow = '';
-  // Re-render current view (in case data was modified)
-  const activeNav = document.querySelector('.nav-item.active');
-  if (activeNav) renderView(activeNav.dataset.view);
-}
+   T1 ROLLBACK CONTRACT preserved: openDetail still sets body.overflow
+   BEFORE the hydrate try-block, and restores + removes .open + rethrows
+   on any sync exception. Verified by SC11 of the coexistence harness.
+
+   The HTML composition helpers (detailEventHTML, detailTrackHTML,
+   detailTodoHTML, detailInspiHTML, detailMemberHTML, detailPhaseHTML)
+   REMAIN INLINE BELOW for now — they will be migrated in TS-7 to
+   /src/features/detail/render.ts as a separate PR. The TS lifecycle
+   reaches into them via typed window accessors with typeof guards.
+
+   See /src/features/detail/ for the canonical lifecycle implementation.
+   ============================================================================ */
 
 function detailEventHTML(e) {
   const relatedTrack = state.tracks.find(t => e.title.toLowerCase().includes(t.name.toLowerCase()) && t.name.length > 3);
@@ -16725,42 +16654,8 @@ function detailAudioInitialHTML(t) {
   return `<label class="detail-audio-empty">+ Charger l'audio (WAV / MP3 / FLAC)<input type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg" style="display:none;" onchange="handleDetailAudio('${t.id}', event)" /></label>`;
 }
 
-async function hydrateDetailAudio(trackId) {
-  const t = state.tracks.find(x => x.id === trackId);
-  if (!t || (!t.idbAudio && !(t.audio && typeof t.audio === 'string' && t.audio.startsWith('data:')))) return;
-  const data = await getTrackAudioUrl(trackId);
-  const slot = document.getElementById('detailAudioSlot-' + trackId);
-  if (!slot) return;
-  if (!data) {
-    slot.innerHTML = detailAudioInitialHTML({ id: trackId });
-    return;
-  }
-  // Make sure the pill skeleton is present (first open may render before hydrate
-  // finishes if openDetail was navigated to from a cold load).
-  if (!slot.querySelector('.track-audio')) {
-    slot.innerHTML = detailAudioInitialHTML(t);
-  }
-  const meta = slot.querySelector(`[data-meta-for="${trackId}"]`);
-  if (meta) meta.textContent = data.name + ' · ' + formatBytes(data.size);
-  const actions = slot.querySelector(`[data-actions-for="${trackId}"]`);
-  if (actions) {
-    actions.innerHTML = `
-      <a class="btn btn-sm" href="${data.url}" download="${escapeHtml(data.name)}">↓ Télécharger</a>
-      <button class="btn btn-sm" onclick="clearAudio('${trackId}'); openDetail('track','${trackId}');" type="button">Retirer</button>
-      <label class="btn btn-sm" style="cursor:pointer;">Remplacer<input type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg" style="display:none;" onchange="handleDetailAudio('${trackId}', event)" /></label>
-    `;
-  }
-  // Duration probe — same trick the catalogue uses.
-  try {
-    const probe = new Audio();
-    probe.preload = 'metadata';
-    probe.src = data.url;
-    probe.addEventListener('loadedmetadata', () => {
-      const pill = slot.querySelector('.track-audio-time');
-      if (pill) pill.textContent = _formatAudioTime(probe.duration);
-    }, { once: true });
-  } catch (e) {}
-}
+// hydrateDetailAudio — EXTRACTED in Phase TS-6 to /src/features/detail/hydrate.ts.
+// (Reattached on window via /src/main.ts; inline call sites unchanged.)
 
 async function handleDetailAudio(id, ev) {
   const f = ev.target.files[0]; if (!f) return;

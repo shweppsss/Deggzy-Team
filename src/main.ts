@@ -13,8 +13,9 @@
 //   TS-2  ✓  App.Boot → /src/core/boot.ts
 //   TS-3  ✓  App.Instrumentation → /src/core/instrumentation.ts
 //   TS-4  ✓  render utilities → /src/lib/render-utils.ts
-//   TS-5  ← current PR: MiniPlayer → /src/features/mini-player.ts
-//   TS-6+    business domains (auth, calendar, detail overlay, modals)
+//   TS-5  ✓  MiniPlayer → /src/features/mini-player.ts
+//   TS-6  ← current PR: detail overlay lifecycle → /src/features/detail/
+//   TS-7+    detail render helpers, auth, calendar
 //   TS-final HTML decomposition
 // ============================================================================
 
@@ -31,6 +32,7 @@ import {
   isFutureOrToday,
 } from './lib/render-utils';
 import { MiniPlayer } from './features/mini-player';
+import { openDetail, closeDetail, bindDetailClose } from './features/detail';
 
 // Augment the global Window type so the legacy code that references
 // `window.App.X.*` and the bare-global helpers (icon, parseDate, etc.)
@@ -55,6 +57,9 @@ declare global {
     parseDate: typeof parseDate;
     isFutureOrToday: typeof isFutureOrToday;
     MiniPlayer: typeof MiniPlayer;
+    openDetail: typeof openDetail;
+    closeDetail: typeof closeDetail;
+    bindDetailClose: typeof bindDetailClose;
   }
 }
 
@@ -90,3 +95,13 @@ window.isFutureOrToday = isFutureOrToday;
 // bare global. Inline call sites (`MiniPlayer.show(...)`) keep working
 // unchanged after this assignment.
 window.MiniPlayer = MiniPlayer;
+
+// Detail overlay lifecycle — historically inline `function openDetail()`,
+// `function closeDetail()`, `function bindDetailClose()` declared at
+// module scope. Re-attached on `window` to keep the legacy inline call
+// sites (`if (typeof openDetail === 'function') openDetail(kind, id);`)
+// working unchanged. Future TS modules should import from
+// `./features/detail` directly instead of going through window.
+window.openDetail = openDetail;
+window.closeDetail = closeDetail;
+window.bindDetailClose = bindDetailClose;
