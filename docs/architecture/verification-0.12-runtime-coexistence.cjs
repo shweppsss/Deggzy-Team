@@ -4918,6 +4918,85 @@ await (async () => {
   _mobileR.setHapticsEnabled(false);
   _mobileR.hapticMs(99);
   eq('SC133.b disabled → no vibrate', _vibrateCalls.length, 1);
+
+  // ===========================================================================
+  // ANALYTICS-1 — EVENT SINK + PROBES (SC134..SC138)
+  // ===========================================================================
+  const _aR = _bundleFeatureDir('analytics');
+
+  // SCENARIO 134 — Sink basics: track + retrieve + count
+  console.log('\n=== SCENARIO 134 — sink basics (Analytics-1) ===');
+  _aR._resetAnalytics();
+  _aR.registerAnalytics({});
+  const ev1 = _aR.track('save', 'start');
+  const ev2 = _aR.track('save', 'success', { rows: 3 }, 120);
+  tr('SC134.a track returns the stamped event', !!ev1 && ev1.id === 1);
+  eq('SC134.b id is monotonic', ev2.id, 2);
+  eq('SC134.c value is captured', ev2.value, 120);
+  eq('SC134.d meta is captured', ev2.meta.rows, 3);
+  eq('SC134.e countEvents() total', _aR.countEvents(), 2);
+  eq('SC134.f countEvents("save")', _aR.countEvents('save'), 2);
+  eq('SC134.g countEvents("save","success")', _aR.countEvents('save', 'success'), 1);
+  const recent = _aR.getRecentEvents();
+  eq('SC134.h getRecentEvents returns 2 events oldest-first', recent.length, 2);
+  tr('SC134.i first event is "start"', recent[0].action === 'start');
+
+  // SCENARIO 135 — Ring buffer eviction
+  console.log('\n=== SCENARIO 135 — ring buffer eviction (Analytics-1) ===');
+  _aR._resetAnalytics();
+  _aR.registerAnalytics({ bufferSize: 10 });
+  for (let i = 0; i < 25; i++) _aR.track('save', 'success', { i });
+  eq('SC135.a buffer size respected (10 events)', _aR.countEvents(), 10);
+  const sc135 = _aR.getRecentEvents();
+  eq('SC135.b oldest event has the highest meta.i kept (i=15)', sc135[0].meta.i, 15);
+  eq('SC135.c newest event is i=24', sc135[sc135.length - 1].meta.i, 24);
+
+  // SCENARIO 136 — Forwarder hook + error isolation
+  console.log('\n=== SCENARIO 136 — forwarder + error isolation (Analytics-1) ===');
+  _aR._resetAnalytics();
+  const sent = [];
+  _aR.registerAnalytics({ send: (e) => { sent.push(e); if (e.action === 'boom') throw new Error('send boom'); } });
+  _aR.track('audio', 'play', { trackId: 't1' });
+  _aR.track('audio', 'boom'); // forwarder throws, sink must still record
+  _aR.track('audio', 'play', { trackId: 't2' });
+  eq('SC136.a forwarder called 3 times', sent.length, 3);
+  eq('SC136.b all 3 events recorded in buffer', _aR.countEvents(), 3);
+  tr('SC136.c sink isolates forwarder throws', _aR.countEvents('audio', 'play') === 2);
+
+  // SCENARIO 137 — Enabled flag suppresses recording
+  console.log('\n=== SCENARIO 137 — enabled flag (Analytics-1) ===');
+  _aR._resetAnalytics();
+  _aR.registerAnalytics({});
+  _aR.setAnalyticsEnabled(false);
+  const suppressed = _aR.track('save', 'success');
+  eq('SC137.a track returns null when disabled', suppressed, null);
+  eq('SC137.b buffer remains empty', _aR.countEvents(), 0);
+  _aR.setAnalyticsEnabled(true);
+  _aR.track('save', 'success');
+  eq('SC137.c re-enabled → tracking resumes', _aR.countEvents(), 1);
+
+  // SCENARIO 138 — Probe shortcuts produce well-formed events
+  console.log('\n=== SCENARIO 138 — probe shortcuts (Analytics-1) ===');
+  _aR._resetAnalytics();
+  _aR.registerAnalytics({});
+  _aR.probeAudio.play('t-A');
+  _aR.probeAudio.seek('t-A', 42);
+  _aR.probeTracks.delete('t-A', 'swipe');
+  _aR.probeSave.success(95);
+  _aR.probeRender.pass('catalogue', 12, 5);
+  _aR.probeRealtime.activitySent('track:added');
+  _aR.probeMobile.visibility('hidden');
+  _aR.probeError.caught('save', 'network');
+  eq('SC138.a 8 probe events recorded', _aR.countEvents(), 8);
+  const probed = _aR.getRecentEvents();
+  tr('SC138.b audio:play stamped trackId', probed[0].category === 'audio' && probed[0].meta.trackId === 't-A');
+  tr('SC138.c audio:seek has value=42', probed[1].action === 'seek' && probed[1].value === 42);
+  tr('SC138.d tracks:delete has source=swipe', probed[2].category === 'tracks' && probed[2].meta.source === 'swipe');
+  tr('SC138.e save:success has value=95', probed[3].action === 'success' && probed[3].value === 95);
+  tr('SC138.f render:pass has sectionCount=5', probed[4].action === 'pass' && probed[4].meta.sectionCount === 5);
+  tr('SC138.g realtime:activity_sent has kind', probed[5].meta.kind === 'track:added');
+  tr('SC138.h mobile:visibility has state', probed[6].meta.state === 'hidden');
+  tr('SC138.i error:caught has where', probed[7].meta.where === 'save');
 })();
 
 // ---------------------------------------------------------------------------

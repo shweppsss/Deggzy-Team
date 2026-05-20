@@ -1152,6 +1152,90 @@ type MobileWindow = {
   mw.subscribeVisibility = mobileSubscribeVisibility;
 }
 
+// ANALYTICS-1: centralized event sink + probes. Instruments the 4
+// orchestrators (save / audio / render / tracks) automatically + exposes
+// a typed probe surface for future call sites. Forwarder hook is left
+// undefined for now — events sit in the in-memory buffer.
+import {
+  registerAnalytics,
+  track as analyticsTrack,
+  getRecentEvents as analyticsRecent,
+  countEvents as analyticsCount,
+  isAnalyticsEnabled as analyticsEnabled,
+  setAnalyticsEnabled as analyticsSetEnabled,
+  probeAudio,
+  probeOffline,
+  probeRealtime,
+  probeMobile,
+  probeError,
+} from './features/analytics';
+
+registerAnalytics({});
+
+// Wire the existing audio store to fire audio:* events.
+{
+  let lastTrackId: string | null = null;
+  let lastIsPlaying = false;
+  audioSubscribeAudio((s) => {
+    if (s.trackId !== lastTrackId) {
+      lastTrackId = s.trackId;
+      // trackId change is implicit in play, captured below
+    }
+    if (s.isPlaying !== lastIsPlaying) {
+      lastIsPlaying = s.isPlaying;
+      if (s.isPlaying && s.trackId) probeAudio.play(s.trackId);
+      else if (!s.isPlaying && s.trackId) probeAudio.pause(s.trackId);
+    }
+  });
+}
+
+// Instrument offline connectivity transitions.
+offlineSubscribeConnectivity((status) => probeOffline.connectivity(status));
+
+// Instrument mobile visibility changes (overlap with offline is fine —
+// they answer different questions).
+mobileSubscribeVisibility((state) => probeMobile.visibility(state));
+
+// Instrument realtime activity (incoming events get logged so dashboards
+// can show inbound rate).
+rtSubscribeFeed((events) => {
+  if (events.length > 0) {
+    const head = events[0];
+    probeRealtime.activityReceived(head.kind, head.actor.id);
+  }
+});
+
+// Global error capture — non-invasive, doesn't preventDefault.
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('error', (e) => {
+    try { probeError.caught('window.error', String((e as ErrorEvent).message || 'unknown')); }
+    catch { /* analytics must not break error handling */ }
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    try {
+      const reason = (e as PromiseRejectionEvent).reason;
+      probeError.rejection('unhandledrejection', reason instanceof Error ? reason.message : String(reason));
+    } catch { /* ignore */ }
+  });
+}
+
+// Window re-attach: minimal devtools surface for inspecting events.
+type AnalyticsWindow = {
+  getAnalytics?: typeof analyticsRecent;
+  countAnalytics?: typeof analyticsCount;
+  trackEvent?: typeof analyticsTrack;
+  setAnalyticsEnabled?: typeof analyticsSetEnabled;
+  isAnalyticsEnabled?: typeof analyticsEnabled;
+};
+{
+  const aw = window as unknown as AnalyticsWindow;
+  aw.getAnalytics = analyticsRecent;
+  aw.countAnalytics = analyticsCount;
+  aw.trackEvent = analyticsTrack;
+  aw.setAnalyticsEnabled = analyticsSetEnabled;
+  aw.isAnalyticsEnabled = analyticsEnabled;
+}
+
 // Window mirrors — legacy inline still uses these names.
 window.loadWorkspaceFromCloud = loadWorkspace;
 window.deepMerge = deepMergeWorkspace as typeof window.deepMerge;
