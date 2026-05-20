@@ -9,26 +9,19 @@
 //   - state.tracks            global app state
 //   - getTrackCoverUrl(id)    async IDB blob URL accessor
 //   - getTrackAudioUrl(id)    async IDB blob URL accessor
-//   - detailAudioInitialHTML  HTML helper for the audio slot skeleton
 //   - escapeHtml              HTML-escape helper
 //   - formatBytes             humanize byte sizes
 //   - _formatAudioTime        humanize duration
 //
-// All accessed with `typeof` guards so the module degrades silently when a
-// dependency isn't yet defined (early boot window). Identical semantics to
-// the inline version.
+// TS-7: `detailAudioInitialHTML` is replaced by `renderAudioInitial` from
+// `./render/track` — an intra-feature TS import. The legacy inline helper
+// is gone.
+//
+// All other accesses use `typeof` guards so the module degrades silently
+// when a dependency isn't yet defined.
 // ============================================================================
 
-interface TrackLite {
-  id: string;
-  idbAudio?: unknown;
-  idbCover?: unknown;
-  audio?: string;
-}
-
-interface StateLike {
-  tracks?: TrackLite[];
-}
+import { renderAudioInitial, getRenderDeps, type TrackEntity } from './render';
 
 interface AudioData {
   url: string;
@@ -36,11 +29,14 @@ interface AudioData {
   size: number;
 }
 
+interface StateLike {
+  tracks?: TrackEntity[];
+}
+
 type Win = Window & {
   state?: StateLike;
   getTrackCoverUrl?: (id: string) => Promise<string | null | undefined>;
   getTrackAudioUrl?: (id: string) => Promise<AudioData | null | undefined>;
-  detailAudioInitialHTML?: (t: { id: string }) => string;
   escapeHtml?: (s: string) => string;
   formatBytes?: (n: number) => string;
   _formatAudioTime?: (s: number) => string;
@@ -50,7 +46,7 @@ function w(): Win {
   return window as unknown as Win;
 }
 
-function findTrack(trackId: string): TrackLite | undefined {
+function findTrack(trackId: string): TrackEntity | undefined {
   const tracks = w().state?.tracks;
   if (!Array.isArray(tracks)) return undefined;
   return tracks.find((x) => x.id === trackId);
@@ -84,17 +80,17 @@ export async function hydrateDetailAudio(trackId: string): Promise<void> {
   const slot = document.getElementById('detailAudioSlot-' + trackId);
   if (!slot) return;
 
-  const initialHTML = w().detailAudioInitialHTML;
+  // Re-use the typed audio-slot renderer (TS-7) for the skeleton. Pure,
+  // no globals — takes a track + deps and returns string HTML.
+  const deps = getRenderDeps();
   if (!data) {
-    if (typeof initialHTML === 'function') {
-      slot.innerHTML = initialHTML({ id: trackId });
-    }
+    slot.innerHTML = renderAudioInitial({ id: trackId }, deps);
     return;
   }
   // Make sure the pill skeleton is present (first open may render before
   // hydrate finishes if openDetail was navigated to from a cold load).
-  if (!slot.querySelector('.track-audio') && typeof initialHTML === 'function') {
-    slot.innerHTML = initialHTML(t as { id: string });
+  if (!slot.querySelector('.track-audio')) {
+    slot.innerHTML = renderAudioInitial(t, deps);
   }
   const meta = slot.querySelector(`[data-meta-for="${trackId}"]`);
   const fmtBytes = w().formatBytes;

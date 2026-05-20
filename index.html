@@ -16408,89 +16408,8 @@ function resetBudget() {
    See /src/features/detail/ for the canonical lifecycle implementation.
    ============================================================================ */
 
-function detailEventHTML(e) {
-  const relatedTrack = state.tracks.find(t => e.title.toLowerCase().includes(t.name.toLowerCase()) && t.name.length > 3);
-  const eyebrowParts = [typeLabel(e.type), formatDateLong(e.date)];
-  if (e.time) {
-    const dur = parseInt(e.duration, 10) || 60;
-    eyebrowParts.push(_formatEventRange(e.time, dur) || formatEventTime(e.time));
-  }
-  // Credit block — shows creator + last editor with absolute + relative times.
-  // Suppresses the "Modifié par" line when no edit ever happened after creation.
-  let creditHtml = '';
-  if (e.createdBy || e.updatedBy) {
-    const created = e.createdBy ? `${_eventActorAvatarHTML(e.createdBy, 'cal-event-avatar-lg')} <span class="event-credit-text"><strong>${escapeHtml(e.createdBy.name || '—')}</strong>${e.createdAt ? ` <span class="event-credit-time">· ${_formatRelativeShort(e.createdAt)}</span>` : ''}</span>` : '';
-    const editedDifferent = e.updatedBy && e.updatedAt && e.updatedAt !== e.createdAt;
-    const edited = editedDifferent ? `${_eventActorAvatarHTML(e.updatedBy, 'cal-event-avatar-lg')} <span class="event-credit-text"><strong>${escapeHtml(e.updatedBy.name || '—')}</strong>${e.updatedAt ? ` <span class="event-credit-time">· ${_formatRelativeShort(e.updatedAt)}</span>` : ''}</span>` : '';
-    creditHtml = `<div class="event-credit-block">
-      ${created ? `<div class="event-credit-row"><span class="event-credit-label">Créé par</span><div class="event-credit-actor">${created}</div></div>` : ''}
-      ${edited ? `<div class="event-credit-row"><span class="event-credit-label">Modifié par</span><div class="event-credit-actor">${edited}</div></div>` : ''}
-    </div>`;
-  }
-  return `
-    <div class="detail-hero">
-      <div class="detail-eyebrow">${eyebrowParts.join(' · ')}</div>
-      <div class="detail-title" contenteditable="true" onblur="updateEventField('${e.id}','title',this.innerText)">${escapeHtml(e.title)}</div>
-      ${creditHtml}
-      ${e.location || e.with ? `<div class="detail-meta-row">
-        ${e.location ? `<div class="detail-meta-pill">📍 <strong>${escapeHtml(e.location)}</strong></div>` : ''}
-        ${e.with ? `<div class="detail-meta-pill">👤 <strong>${escapeHtml(e.with)}</strong></div>` : ''}
-      </div>` : ''}
-    </div>
-
-    <div class="detail-section">
-      <h3>Informations</h3>
-      <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px;">
-        <div class="detail-field"><label>Date</label><input type="date" value="${e.date}" onchange="updateEventField('${e.id}','date',this.value)" /></div>
-        <div class="detail-field"><label>Heure</label><input type="time" value="${e.time || ''}" onchange="updateEventField('${e.id}','time',this.value)" /></div>
-        <div class="detail-field"><label>Durée</label>
-          <select onchange="updateEventField('${e.id}','duration',parseInt(this.value,10))">
-            ${[15,30,45,60,75,90,105,120,150,180,240,360,480].map(m =>
-              `<option value="${m}" ${(parseInt(e.duration,10)||60)===m?'selected':''}>${_formatDuration(m)}</option>`
-            ).join('')}
-          </select>
-        </div>
-      </div>
-      <div class="detail-field"><label>Type</label>
-        <select onchange="updateEventField('${e.id}','type',this.value)">
-          ${EVENT_TYPES.map(t => `<option value="${t}" ${e.type===t?'selected':''}>${typeLabel(t)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="detail-field"><label>Lieu / Lien (Zoom, studio, hôtel...)</label><input value="${escapeHtml(e.location || '')}" onchange="updateEventField('${e.id}','location',this.value)" placeholder="Studio Noname, Zoom, etc." /></div>
-      <div class="detail-field"><label>Avec (personnes)</label><input value="${escapeHtml(e.with || '')}" onchange="updateEventField('${e.id}','with',this.value)" placeholder="Degzzy, journaliste X, label Y..." /></div>
-      <div class="detail-field"><label>Notes / Brief</label><textarea onblur="updateEventField('${e.id}','notes',this.value)" placeholder="Détails, ordre du jour, à préparer...">${escapeHtml(e.notes || '')}</textarea></div>
-      <div class="detail-field"><label>Visibilité</label>
-        <select onchange="updateEventField('${e.id}','visibility',this.value)">
-          <option value="team" ${(e.visibility !== 'private') ? 'selected' : ''}>Équipe — visible par toute la team</option>
-          <option value="private" ${(e.visibility === 'private') ? 'selected' : ''}>Privé — visible uniquement par moi</option>
-        </select>
-      </div>
-    </div>
-
-    ${relatedTrack ? `
-    <div class="detail-section">
-      <h3>Morceau lié</h3>
-      <div class="detail-related">
-        <div class="detail-related-card" onclick="openDetail('track','${relatedTrack.id}')">
-          <div class="detail-related-label">Morceau</div>
-          <div class="detail-related-title">${escapeHtml(relatedTrack.name)}</div>
-        </div>
-      </div>
-    </div>` : ''}
-
-    <div class="detail-section">
-      <h3>Checklist suggérée pour ce type d'événement</h3>
-      <div class="detail-checklist">
-        ${suggestChecklist(e.type).map(c => `<div style="display:flex; gap:10px; align-items:center; font-size:13px; color: var(--text-soft);"><span style="width:6px; height:6px; background: var(--accent); border-radius:50%;"></span>${c}</div>`).join('')}
-      </div>
-    </div>
-
-    <div class="detail-actions">
-      <button class="btn btn-danger" onclick="deleteEventDetail('${e.id}')">Supprimer</button>
-      <button class="btn btn-primary" data-detail-close>Fermer</button>
-    </div>
-  `;
-}
+// detailEventHTML — EXTRACTED in Phase TS-7 to /src/features/detail/render/event.ts.
+// Pure renderer (entity, deps, ctx) => string. Called by lifecycle.ts.
 
 function suggestChecklist(type) {
   const map = {
@@ -16525,96 +16444,8 @@ function deleteEventDetail(id) {
   renderAll();
 }
 
-function detailTrackHTML(t) {
-  const hasCover = t.cover || t.idbCover;
-  const coverInline = (t.cover && typeof t.cover === 'string' && t.cover.startsWith('data:')) ? t.cover : '';
-  const relatedEvents = state.events.filter(e => e.title.toLowerCase().includes(t.name.toLowerCase()) && t.name.length > 3);
-  const heroMeta = [statusLabel(t.status)];
-  if (t.releaseDate) heroMeta.push(formatDate(t.releaseDate));
-  if (t.duration) heroMeta.push(t.duration);
-  return `
-    <div class="track-hero">
-      <label class="track-hero-cover ${hasCover ? 'has-image' : ''}" data-cover-for-detail="${t.id}" style="${coverInline ? `background-image:url('${coverInline}')` : ''}">
-        ${hasCover ? '' : '<span class="track-hero-cover-empty">+ Ajouter cover</span>'}
-        <input type="file" accept="image/*" style="display:none;" onchange="handleDetailCover('${t.id}', event)" />
-      </label>
-      <h1 class="track-hero-title" contenteditable="true" onblur="updateTrackField('${t.id}','name',this.innerText.trim())">${escapeHtml(t.name)}</h1>
-      <div class="track-hero-meta">${heroMeta.join(' · ')}</div>
-    </div>
-
-    <div class="track-player-section" id="detailAudioSlot-${t.id}">
-      ${detailAudioInitialHTML(t)}
-    </div>
-
-    <div class="info-list">
-      <div class="info-row">
-        <div class="info-label">Date de sortie</div>
-        <input type="date" class="info-value" value="${t.releaseDate || ''}" onchange="updateTrackField('${t.id}','releaseDate',this.value)" />
-      </div>
-      <div class="info-row">
-        <div class="info-label">Statut</div>
-        <select class="info-value" onchange="updateTrackField('${t.id}','status',this.value)">
-          ${['single','projet','produit','mixe','masterise','sorti'].map(s => `<option value="${s}" ${t.status===s?'selected':''}>${statusLabel(s)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="info-row">
-        <div class="info-label">BPM</div>
-        <input class="info-value" placeholder="—" value="${t.bpm || ''}" onchange="updateTrackField('${t.id}','bpm',this.value)" />
-      </div>
-      <div class="info-row">
-        <div class="info-label">Durée</div>
-        <input class="info-value" placeholder="3:24" value="${t.duration || ''}" onchange="updateTrackField('${t.id}','duration',this.value)" />
-      </div>
-      <div class="info-row">
-        <div class="info-label">Tonalité</div>
-        <input class="info-value" placeholder="—" value="${t.key || ''}" onchange="updateTrackField('${t.id}','key',this.value)" />
-      </div>
-      <div class="info-row">
-        <div class="info-label">Featuring</div>
-        <input class="info-value" placeholder="—" value="${t.feat || ''}" onchange="updateTrackField('${t.id}','feat',this.value)" />
-      </div>
-    </div>
-
-    <div class="detail-section">
-      <h3>Notes</h3>
-      <textarea class="track-notes-area" placeholder="Brief, intention, références..." onblur="updateTrackField('${t.id}','notes',this.value)">${escapeHtml(t.notes || '')}</textarea>
-    </div>
-
-    <div class="detail-section">
-      <h3>Événements liés${relatedEvents.length ? ' · ' + relatedEvents.length : ''}</h3>
-      ${relatedEvents.length ? `
-        <div class="detail-related">
-          ${relatedEvents.map(e => `
-            <div class="detail-related-card" onclick="openDetail('event','${e.id}')">
-              <div class="detail-related-label">${typeLabel(e.type)} · ${formatDate(e.date)}${e.time ? ' · ' + formatEventTime(e.time) : ''}</div>
-              <div class="detail-related-title">${escapeHtml(e.title)}</div>
-            </div>
-          `).join('')}
-        </div>
-      ` : `<div style="font-size: 13px; color: var(--text-soft); margin-bottom: 10px;">Aucun événement pour l'instant.</div>`}
-      <button class="btn" style="margin-top: 10px;" onclick="addEventForTrack('${t.id}')">+ Ajouter</button>
-    </div>
-
-    <details class="detail-collapsible">
-      <summary>Plus d'infos · ISRC, Publishing</summary>
-      <div class="info-list" style="margin: 12px 0 0;">
-        <div class="info-row">
-          <div class="info-label">ISRC</div>
-          <input class="info-value" placeholder="FR-XXX-26-00001" value="${t.isrc || ''}" onchange="updateTrackField('${t.id}','isrc',this.value)" />
-        </div>
-        <div class="info-row">
-          <div class="info-label">Publishing</div>
-          <input class="info-value" placeholder="SACEM / autre" value="${t.publishing || ''}" onchange="updateTrackField('${t.id}','publishing',this.value)" />
-        </div>
-      </div>
-    </details>
-
-    <div class="detail-actions">
-      <button class="btn btn-danger" onclick="deleteTrackDetail('${t.id}')">Supprimer</button>
-      <button class="btn btn-primary" data-detail-close>Fermer</button>
-    </div>
-  `;
-}
+// detailTrackHTML — EXTRACTED in Phase TS-7 to /src/features/detail/render/track.ts.
+// Pure renderer (entity, deps, ctx) => string. Called by lifecycle.ts.
 function updateTrackField(id, field, v) {
   const t = state.tracks.find(x => x.id === id);
   if (!t) return;
@@ -16643,16 +16474,9 @@ async function handleDetailCover(id, ev) {
     toast('Erreur upload cover.');
   }
 }
-function detailAudioInitialHTML(t) {
-  if ((t.audio && typeof t.audio === 'string' && t.audio.startsWith('data:')) || t.idbAudio) {
-    // Same Untitled-style pill as the catalogue, plus the per-track action row
-    // (download / replace / remove) underneath. Hydrated below with the real
-    // duration + filename once the IDB blob is loaded.
-    return _trackAudioPillHTML(t) + `<div class="track-audio-meta" data-meta-for="${escapeHtml(t.id)}" style="margin-top:10px;"></div>` +
-      `<div class="track-audio-actions" data-actions-for="${escapeHtml(t.id)}" style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;"></div>`;
-  }
-  return `<label class="detail-audio-empty">+ Charger l'audio (WAV / MP3 / FLAC)<input type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg" style="display:none;" onchange="handleDetailAudio('${t.id}', event)" /></label>`;
-}
+// detailAudioInitialHTML — EXTRACTED in Phase TS-7 to /src/features/detail/render/track.ts
+// (exported as `renderAudioInitial`). Imported by hydrate.ts too; no longer
+// needed as an inline helper.
 
 // hydrateDetailAudio — EXTRACTED in Phase TS-6 to /src/features/detail/hydrate.ts.
 // (Reattached on window via /src/main.ts; inline call sites unchanged.)
@@ -16766,40 +16590,8 @@ function ensureTodoPriorityMigration() {
   }
 }
 
-function detailTodoHTML(t) {
-  const priority = todoPriority(t);
-  const priorityLabel = PRIORITY_LABELS[priority] || priority;
-  return `
-    <div class="detail-hero">
-      <div class="detail-eyebrow">${t.cat} · <span class="priority-pill" data-priority="${priority}">${escapeHtml(priorityLabel)}</span>${t.done ? ' · ✓ Terminée' : ''}</div>
-      <div class="detail-title" contenteditable="true" onblur="updateTodoField('${t.id}','text',this.innerText)">${escapeHtml(t.text)}</div>
-    </div>
-
-    <div class="detail-section">
-      <h3>Paramètres</h3>
-      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px;">
-        <div class="detail-field"><label>Catégorie</label>
-          <select onchange="updateTodoField('${t.id}','cat',this.value)">
-            ${TODO_CATEGORIES.map(c => `<option ${t.cat===c?'selected':''}>${c}</option>`).join('')}
-          </select>
-        </div>
-        <div class="detail-field"><label>Priorité</label>
-          <select onchange="updateTodoPriority('${t.id}',this.value)">
-            ${PRIORITY_KEYS.map(p => `<option value="${p}" ${priority===p?'selected':''}>${escapeHtml(PRIORITY_LABELS[p])}</option>`).join('')}
-          </select>
-        </div>
-        <div class="detail-field"><label>Échéance</label><input type="date" value="${t.due || ''}" onchange="updateTodoField('${t.id}','due',this.value)" /></div>
-      </div>
-      <div class="detail-field"><label>Tags <span class="profile-field-hint">séparés par virgule</span></label><input value="${escapeHtml(tagsToInput(t.tags))}" onblur="updateTodoTags('${t.id}', this.value)" placeholder="ex: rich, single" /></div>
-      <div class="detail-field"><label>Notes (optionnel)</label><textarea onblur="updateTodoField('${t.id}','notes',this.value)">${escapeHtml(t.notes || '')}</textarea></div>
-    </div>
-
-    <div class="detail-actions">
-      <button class="btn ${t.done ? '' : 'btn-primary'}" onclick="toggleTodo('${t.id}'); closeDetail();">${t.done ? 'Marquer non faite' : '✓ Marquer faite'}</button>
-      <button class="btn btn-danger" onclick="deleteTodo('${t.id}'); closeDetail();">Supprimer</button>
-    </div>
-  `;
-}
+// detailTodoHTML — EXTRACTED in Phase TS-7 to /src/features/detail/render/todo.ts.
+// Pure renderer (entity, deps) => string.
 function updateTodoTags(id, value) {
   const t = state.todos.find(x => x.id === id);
   if (!t) return;
@@ -16815,39 +16607,8 @@ function updateTodoField(id, field, v) {
   save();
 }
 
-function detailInspiHTML(i) {
-  let media = '';
-  if (i.type === 'image' && i.data) {
-    if (i.dataType && i.dataType.startsWith('video')) {
-      media = `<video src="${i.data}" controls style="width:100%; max-height:500px; background:#000; border-radius:var(--radius);"></video>`;
-    } else {
-      media = `<img src="${i.data}" style="width:100%; max-height:500px; object-fit:contain; background:#000; border-radius:var(--radius);" />`;
-    }
-  } else if (i.type === 'link') {
-    media = `<div style="padding:60px; background: var(--surface); border-radius:var(--radius); text-align:center; font-size:48px; color:#7AB5C9;">↗</div>`;
-  } else {
-    media = `<div style="padding:80px 40px; background: var(--accent-soft); border-radius:var(--radius); text-align:center; font-size:36px; font-weight:800; color: var(--accent);">"${escapeHtml(i.title)}"</div>`;
-  }
-  return `
-    <div class="detail-hero">
-      <div class="detail-eyebrow">Inspiration · <span contenteditable="true" onblur="updateInspiField('${i.id}','category',this.innerText.trim())">${i.category || 'Autre'}</span></div>
-      <div class="detail-title" contenteditable="true" onblur="updateInspiField('${i.id}','title',this.innerText.trim())">${escapeHtml(i.title || 'Sans titre')}</div>
-    </div>
-    ${media}
-    <div class="detail-section" style="margin-top:24px;">
-      <h3>Notes / Pourquoi cette référence</h3>
-      <textarea style="width:100%; min-height: 120px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; color: var(--text); font-family: inherit; font-size: 14px; line-height: 1.5;" placeholder="À remplir..." onblur="updateInspiField('${i.id}','notes',this.value)">${escapeHtml(i.notes || '')}</textarea>
-      ${i.type === 'link' ? `
-        <div class="detail-field" style="margin-top:14px;"><label>URL</label><input value="${escapeHtml(i.url || '')}" onchange="updateInspiField('${i.id}','url',this.value)" /></div>
-      ` : ''}
-      ${i.url ? `<div style="margin-top:14px;"><a href="${i.url}" target="_blank" rel="noopener" style="color:#7AB5C9; word-break:break-all;">${escapeHtml(i.url)} ↗</a></div>` : ''}
-    </div>
-    <div class="detail-actions">
-      <button class="btn btn-danger" onclick="deleteInspiById('${i.id}'); closeDetail();">Supprimer</button>
-      <button class="btn btn-primary" data-detail-close>Fermer</button>
-    </div>
-  `;
-}
+// detailInspiHTML — EXTRACTED in Phase TS-7 to /src/features/detail/render/inspi.ts.
+// Pure renderer (entity, deps) => string.
 function updateInspiField(id, field, value) {
   const i = state.inspirations.find(x => x.id === id);
   if (!i) return;
@@ -16860,24 +16621,8 @@ function deleteInspiById(id) {
   save();
 }
 
-function detailMemberHTML(m) {
-  return `
-    <div class="detail-hero">
-      <div class="detail-eyebrow">${m.role}</div>
-      <div class="detail-title" contenteditable="true" onblur="updateMemberField('${m.id}','name',this.innerText)">${escapeHtml(m.name)}</div>
-    </div>
-    <div class="detail-section">
-      <h3>Informations</h3>
-      <div class="detail-field"><label>Rôle</label><input value="${escapeHtml(m.role)}" onchange="updateMemberField('${m.id}','role',this.value)" /></div>
-      <div class="detail-field"><label>Notes / Mission</label><textarea onblur="updateMemberField('${m.id}','note',this.value)">${escapeHtml(m.note || '')}</textarea></div>
-      <div class="detail-field"><label>Contact (téléphone / email / IG)</label><input placeholder="—" value="${escapeHtml(m.contact || '')}" onchange="updateMemberField('${m.id}','contact',this.value)" /></div>
-    </div>
-    <div class="detail-actions">
-      <button class="btn btn-danger" onclick="deleteMember('${m.id}'); closeDetail();">Supprimer</button>
-      <button class="btn btn-primary" data-detail-close>Fermer</button>
-    </div>
-  `;
-}
+// detailMemberHTML — EXTRACTED in Phase TS-7 to /src/features/detail/render/member.ts.
+// Pure renderer (entity, deps) => string.
 function updateMemberField(id, field, v) {
   const m = state.team.find(x => x.id === id);
   if (!m) return;
@@ -16885,42 +16630,8 @@ function updateMemberField(id, field, v) {
   save();
 }
 
-function detailPhaseHTML(p, idx) {
-  const relatedTodos = (state.todos || []).filter(t => {
-    if (idx === 0) return t.cat === 'Pre-Launch';
-    if (idx === 1) return t.cat === 'Rollout';
-    if (idx === 2) return t.cat === 'Pivot';
-    if (idx === 3) return t.cat === 'Élévation';
-    if (idx === 4) return t.cat === 'Événement';
-    return false;
-  });
-  return `
-    <div class="detail-hero">
-      <div class="detail-eyebrow">${p.label} — ${p.dates}</div>
-      <div class="detail-title">${escapeHtml(p.title)}</div>
-      <div class="detail-tagline">${escapeHtml(p.desc)}</div>
-    </div>
-    <div class="detail-section">
-      <h3>Actions de la phase</h3>
-      <ul style="padding-left:18px; color: var(--text-soft); font-size: 14px; line-height: 1.8;">
-        ${p.items.map(i => `<li>${escapeHtml(i)}</li>`).join('')}
-      </ul>
-    </div>
-    ${relatedTodos.length ? `
-    <div class="detail-section">
-      <h3>Tâches liées (${relatedTodos.filter(t=>!t.done).length} à faire / ${relatedTodos.length} totales)</h3>
-      <div class="detail-related">
-        ${relatedTodos.map(t => `
-          <div class="detail-related-card" onclick="openDetail('todo','${t.id}')">
-            <div class="detail-related-label">${t.done ? '✓ Terminée' : (t.urgent ? '⚡ Urgent' : 'À faire')}</div>
-            <div class="detail-related-title">${escapeHtml(t.text)}</div>
-          </div>
-        `).join('')}
-      </div>
-    </div>` : ''}
-    <div class="detail-actions"><button class="btn btn-primary" data-detail-close>Fermer</button></div>
-  `;
-}
+// detailPhaseHTML — EXTRACTED in Phase TS-7 to /src/features/detail/render/phase.ts.
+// Pure renderer (entity, deps, ctx) => string.
 
 /* ============================
    ROUTING / INIT
