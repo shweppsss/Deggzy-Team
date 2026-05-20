@@ -61,7 +61,7 @@ export function setAudioState(patch: Partial<AudioState>): void {
     const next = patch[key];
     if (next !== undefined && _audioState[key] !== next) {
       // Object.assign signature isn't tight enough for the discriminated union; do per-field.
-      (_audioState as Record<string, unknown>)[key] = next as unknown;
+      (_audioState as unknown as Record<string, unknown>)[key] = next as unknown;
       changed = true;
     }
   }

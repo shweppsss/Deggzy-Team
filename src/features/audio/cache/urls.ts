@@ -33,9 +33,11 @@ const _audioInflight: Record<string, Promise<CachedAudio | null>> = {};
  * Supabase fallback + no deps registered).
  */
 export function getTrackAudioUrl(trackId: string): Promise<CachedAudio | null> {
-  if (_audioCache[trackId]) return Promise.resolve(_audioCache[trackId]);
+  const cached = _audioCache[trackId];
+  if (cached) return Promise.resolve(cached);
   // Dedupe concurrent calls — same in-flight promise is shared.
-  if (_audioInflight[trackId]) return _audioInflight[trackId];
+  const inflight = _audioInflight[trackId];
+  if (inflight) return inflight;
   const p = _resolveTrackAudio(trackId).finally(() => {
     delete _audioInflight[trackId];
   });
@@ -89,8 +91,10 @@ const _coverCache: Record<string, string> = {};
 const _coverInflight: Record<string, Promise<string | null>> = {};
 
 export function getTrackCoverUrl(trackId: string): Promise<string | null> {
-  if (_coverCache[trackId]) return Promise.resolve(_coverCache[trackId]);
-  if (_coverInflight[trackId]) return _coverInflight[trackId];
+  const cached = _coverCache[trackId];
+  if (cached) return Promise.resolve(cached);
+  const inflight = _coverInflight[trackId];
+  if (inflight) return inflight;
   const p = _resolveTrackCover(trackId).finally(() => {
     delete _coverInflight[trackId];
   });
