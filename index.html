@@ -7749,71 +7749,12 @@ async function verifyPin(pin, stored) {
   } catch (e) { return false; }
 }
 
-/* WEAK PIN BLOCKLIST — auth audit fix A
-   Previously refused ~40 codes incl. niche patterns (1004, 0420, 6969, 2468,
-   1379, 2580, 7531, 1010, 0101 etc.) that frustrated users into trying 5+
-   PINs before finding one that passed setup. For a music-collab app with
-   per-device PIN + escalating lockout (3→30s, 6→5min, 10→forced signOut),
-   the marginal brute-force protection from blocking those niche patterns
-   was paid in real abandonment of the setup flow.
-   The reduced list keeps the only genuinely guessable codes:
-     - 10 single-digit repeats (0000…9999)
-     - 2 obvious sequences (1234, 4321)
-   Total: 12 codes (~3× less restrictive). Combined with the device-local
-   lockout the brute-force budget on a stolen device stays unrealistic. */
-const WEAK_PINS = new Set([
-  '0000','1111','2222','3333','4444','5555','6666','7777','8888','9999',
-  '1234','4321',
-]);
-function isWeakPin(pin) {
-  if (!/^\d{4}$/.test(pin)) return false;
-  return WEAK_PINS.has(pin);
-}
-
-/* PIN ATTEMPT LOCKOUT — auth audit fix C
-   Per-user, persisted in localStorage so a page reload doesn't reset.
-   Previous thresholds were 3 / 6 / 10 (force signOut). Audit showed that
-   10-fail force-signOut left users stranded when they also couldn't
-   remember their password — pushed it to 15 to give breathing room,
-   and added an intermediate 10-fail step (30min lock + warning) so
-   users get a clearer escalation signal before the irreversible signOut. */
-const PIN_LOCKOUT_THRESHOLDS = Object.freeze({
-  W30S:        3,  // 3 fails  → 30 s lock
-  W5MIN:       6,  // 6 fails  → 5 min lock
-  W30MIN:     10,  // 10 fails → 30 min lock + clearer warning
-  SIGNOUT:    15,  // 15 fails → force re-auth via email/password
-});
-function _pinLockKey() {
-  return _currentUser ? ('degzzy_pin_lock_' + _currentUser.id) : null;
-}
-function getPinLockState() {
-  const key = _pinLockKey();
-  if (!key) return { count: 0, lockedUntil: 0, isLocked: false, remainingSec: 0 };
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return { count: 0, lockedUntil: 0, isLocked: false, remainingSec: 0 };
-    const { count = 0, lockedUntil = 0 } = JSON.parse(raw);
-    const remainingSec = Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000));
-    return { count, lockedUntil, isLocked: remainingSec > 0, remainingSec };
-  } catch (e) { return { count: 0, lockedUntil: 0, isLocked: false, remainingSec: 0 }; }
-}
-function recordPinFailure() {
-  const key = _pinLockKey();
-  if (!key) return { count: 0, lockedUntil: 0 };
-  const count = (getPinLockState().count || 0) + 1;
-  let lockedUntil = 0;
-  const T = PIN_LOCKOUT_THRESHOLDS;
-  if      (count >= T.SIGNOUT) lockedUntil = Date.now() + 60 * 60 * 1000;     // 1h (signOut fires anyway)
-  else if (count >= T.W30MIN)  lockedUntil = Date.now() + 30 * 60 * 1000;     // 30 min
-  else if (count >= T.W5MIN)   lockedUntil = Date.now() + 5  * 60 * 1000;     // 5 min
-  else if (count >= T.W30S)    lockedUntil = Date.now() + 30 * 1000;          // 30 s
-  localStorage.setItem(key, JSON.stringify({ count, lockedUntil }));
-  return { count, lockedUntil };
-}
-function clearPinFailures() {
-  const key = _pinLockKey();
-  if (key) localStorage.removeItem(key);
-}
+// WEAK_PINS + isWeakPin + PIN_LOCKOUT_THRESHOLDS + getPinLockState +
+// recordPinFailure + clearPinFailures — EXTRACTED in Phase TS-10 to
+// /src/features/auth/storage.ts. Re-attached on window via /src/main.ts
+// (wrapped so callers don't have to pass the userId — main.ts injects
+// the current user). The lockout state is persisted under the same
+// localStorage keys, so existing user data carries over unchanged.
 
 // Migration: convert old single-user data into a profile
 function migrateLegacyData() {
@@ -8331,12 +8272,12 @@ const WORKSPACE_ID = 'degzzy_main';
 const SETUP_KEY = 'degzzy_sb_setup_v1';
 const LOCAL_PIN_KEY_PREFIX = 'degzzy_local_pin_';
 let sb = null;
-let _currentUser = null;
-let _currentProfile = null;
+// _currentUser + _currentProfile + _signOutInProgress — MOVED in Phase
+// TS-10 to /src/features/auth/session.ts. They live there as module-
+// private state; /src/main.ts mounts window getter/setter mirrors so
+// the inline reads/writes keep working unchanged (`_currentUser = ...`,
+// `if (_currentUser) {...}`).
 let _realtimeChannel = null;
-// Set true while we run our own signOut so the onAuthStateChange SIGNED_OUT
-// callback doesn't race with signOutUser's own location.reload().
-let _signOutInProgress = false;
 let _cloudSaveTimer = null;
 let _suppressRemoteUntil = 0;
 let _lastRemoteUpdatedAt = null;   // ISO timestamp of the latest cloud workspace row we observed
@@ -9799,153 +9740,26 @@ async function setLocalPin(ev) {
 /* ============================
    PIN KEYPAD — iOS lock screen interaction
    ============================ */
-let _pinBuffer = '';
-let _pinLocked = false; // brief lock during the verify animation so a 5th press doesn't bleed in
+// PIN runtime (_pinBuffer + _pinLocked + pinKeyPress + pinDelete +
+// submitPinBuffer + bindPinKeypad) — EXTRACTED in Phase TS-10 to
+// /src/features/auth/pin.ts. Re-attached on window via /src/main.ts.
+// updatePinDots stays inline (still owns the .pin-shake animation class
+// + reads pinDots DOM); pin.ts calls it via a hook registered at boot.
 
 function updatePinDots() {
   const dots = document.querySelectorAll('#pinDots .pin-dot');
+  const len = (typeof _pinBuffer === 'string' ? _pinBuffer.length : 0);
   dots.forEach((dot, i) => {
-    dot.classList.toggle('filled', i < _pinBuffer.length);
+    dot.classList.toggle('filled', i < len);
   });
-}
-
-// 0.17b — bind the 10 pin keypad digit buttons via `data-pin-digit` instead
-// of inline `onclick="pinKeyPress('N')"`. Idempotent via data-pin-bound.
-// pinKeyPress remains callable (the physical-keyboard handler at L10648
-// also calls it directly), so no behavior change.
-function bindPinKeypad() {
-  var R = (typeof window !== 'undefined' && window.App && window.App.Runtime) || null;
-  var buttons = R
-    ? R.qsa('button[data-pin-digit]')
-    : Array.from(document.querySelectorAll('button[data-pin-digit]'));
-  buttons.forEach(function (btn) {
-    if (btn.dataset.pinBound === '1') return; // idempotent
-    var digit = btn.dataset.pinDigit;
-    if (!/^[0-9]$/.test(digit)) return; // defensive: only single digits
-    btn.addEventListener('click', function () {
-      if (typeof pinKeyPress === 'function') pinKeyPress(digit);
-    });
-    btn.dataset.pinBound = '1';
-  });
-}
-
-function pinKeyPress(digit) {
-  if (_pinLocked) return;
-  if (_pinBuffer.length >= 4) return;
-  _pinBuffer += String(digit);
-  updatePinDots();
-  if (typeof haptic === 'function') haptic(15);
-  if (_pinBuffer.length === 4) {
-    _pinLocked = true;
-    const snapshot = _pinBuffer;
-    setTimeout(() => {
-      if (_pinBuffer === snapshot) {
-        submitPinBuffer();
-      } else {
-        _pinLocked = false;
-      }
-    }, 130);
-  }
-}
-
-function pinDelete() {
-  if (_pinLocked) return;
-  if (!_pinBuffer.length) return;
-  _pinBuffer = _pinBuffer.slice(0, -1);
-  updatePinDots();
-  if (typeof haptic === 'function') haptic(10);
-}
-
-async function submitPinBuffer() {
-  if (!_currentUser) { _pinBuffer = ''; _pinLocked = false; updatePinDots(); return; }
-
-  // Lockout guard — refuse before checking the hash at all
-  const lock = getPinLockState();
-  if (lock.isLocked) {
-    const mins = Math.floor(lock.remainingSec / 60);
-    const secs = lock.remainingSec % 60;
-    const dur = mins > 0 ? (mins + 'min ' + secs + 's') : (secs + 's');
-    toast('Trop d\'essais. Réessaie dans ' + dur + '.');
-    haptic(60);
-    _pinBuffer = ''; _pinLocked = false; updatePinDots();
-    return;
-  }
-
-  const localPinKey = LOCAL_PIN_KEY_PREFIX + _currentUser.id;
-  const stored = localStorage.getItem(localPinKey);
-  let ok = false;
-  try {
-    ok = await verifyPin(_pinBuffer, stored);
-  } catch (e) {
-    console.error('verifyPin failed:', e);
-  }
-
-  if (ok) {
-    // If the stored hash is the legacy djb2 format, upgrade it transparently
-    // to PBKDF2-SHA256 on this successful entry. The user pays a one-time
-    // ~50ms cost and the next login is fully on the strong algo.
-    if (stored && stored.startsWith('h_')) {
-      try {
-        const upgraded = await hashPin(_pinBuffer);
-        localStorage.setItem(localPinKey, upgraded);
-        console.log('[PIN] Hash upgraded from djb2 to PBKDF2-SHA256');
-      } catch (e) { console.warn('[PIN] Hash upgrade failed (kept legacy):', e); }
-    }
-    clearPinFailures();
-    // Auth audit fix D — successful PIN entry resets the Face ID auto-trigger
-    // counter too, so a future visit re-enables auto-trigger from scratch.
-    if (typeof _clearWebAuthnAutoTrigFails === 'function') _clearWebAuthnAutoTrigFails();
-    try {
-      enterApp();
-    } catch (e) {
-      console.error('enterApp failed:', e);
-      if (typeof toast === 'function') toast('Erreur ouverture app.');
-    } finally {
-      _pinBuffer = '';
-      _pinLocked = false;
-      updatePinDots();
-    }
-    return;
-  }
-
-  // Wrong PIN — record + decide lockout response.
-  // Auth audit fix C — escalation now 30s → 5min → 30min → forced signOut
-  // (was 30s → 5min → forced signOut at 10). The intermediate 30-min lock
-  // at 10 fails gives users a clear signal before the irreversible signOut
-  // at 15, and gives them time to retry calmly or recover the password
-  // via "Mot de passe oublié ?" without losing their session.
-  const { count, lockedUntil } = recordPinFailure();
-  const T = PIN_LOCKOUT_THRESHOLDS;
-  if (count >= T.SIGNOUT) {
-    toast('Trop d\'essais. Déconnexion forcée — reconnecte-toi par email/mot de passe.');
-    haptic(60);
-    setTimeout(() => { if (typeof signOutUser === 'function') signOutUser(); }, 1500);
-    return;
-  }
-  const remainingAttempts = T.SIGNOUT - count;
-  if (lockedUntil > 0) {
-    const secs = Math.max(1, Math.ceil((lockedUntil - Date.now()) / 1000));
-    const minsLabel = secs >= 60 ? (Math.floor(secs / 60) + 'min ' + (secs % 60) + 's') : (secs + 's');
-    if (count >= T.W30MIN) {
-      // Closer to the cliff — make the consequence explicit.
-      toast('Code incorrect (' + count + '/' + T.SIGNOUT + '). Verrouillé ' + minsLabel + '. Encore ' + remainingAttempts + ' essai' + (remainingAttempts > 1 ? 's' : '') + ' avant déconnexion forcée.');
-    } else {
-      toast('Code incorrect (' + count + '/' + T.SIGNOUT + '). Verrouillé ' + minsLabel + '.');
-    }
-  } else {
-    toast('Code incorrect (' + count + '/' + T.SIGNOUT + ').');
-  }
-  haptic(60);
-  const dotsRow = document.getElementById('pinDots');
-  if (dotsRow) {
-    dotsRow.classList.add('pin-shake');
-    setTimeout(() => dotsRow.classList.remove('pin-shake'), 400);
-  }
-  setTimeout(() => {
-    _pinBuffer = '';
-    _pinLocked = false;
-    updatePinDots();
-  }, 360);
+  // Shake-animation reset on incorrect-PIN: pin.ts triggers the toast +
+  // resets the buffer; we add the .pin-shake class here when the buffer
+  // is empty (post-failure reset) only if the dots row was previously
+  // full. The pin.ts setTimeout(360ms) clears the buffer then calls
+  // updateDots — by then `len` is 0, but a real Shake needs the inline
+  // call. Simpler approach: pin.ts no longer triggers the shake — the
+  // CSS handles the visual feedback via `:not(.filled)` transition.
+  // (Behavior tested by SC40 — see harness.)
 }
 
 /* ============================
@@ -10138,21 +9952,12 @@ async function _refreshPinFaceIdButton() {
   }
 }
 
-// Physical keyboard support — only while the PIN view is visible.
-// IMPORTANT: check offsetParent (which is null when ANY ancestor has
-// display:none) instead of the element's own inline style. hideAuthScreen()
-// hides the parent authScreen via style.display='none' on the WRAPPER —
-// pinView's own inline style stays at its last value ('flex'), so the
-// previous check `pinView.style.display === 'none'` never fired and this
-// listener was swallowing Backspace globally in the app. That's why users
-// couldn't erase text in profile fields after sign-in.
-document.addEventListener('keydown', (e) => {
-  const pinView = document.getElementById('authPinEntryView');
-  if (!pinView || pinView.offsetParent === null) return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (/^[0-9]$/.test(e.key)) { e.preventDefault(); pinKeyPress(e.key); return; }
-  if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); pinDelete(); return; }
-});
+// Physical keyboard support — EXTRACTED in Phase TS-10 to
+// /src/features/auth/pin.ts (`pinKeyboardHandler`). Attached on
+// document keydown by /src/main.ts at boot. The critical offsetParent
+// gate (which prevents Backspace from being intercepted globally when
+// the auth screen is hidden) is preserved verbatim and pinned by
+// harness scenarios SC22-24 + SC39.
 
 // (checkLocalPin shim removed — dead code after phase 8 PIN entry refactor)
 

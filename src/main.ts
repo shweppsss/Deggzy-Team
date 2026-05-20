@@ -81,6 +81,35 @@ import {
   handleInspiModalFile,
   getInspiDraft,
 } from './features/modals';
+// TS-10 — auth foundation: local runtime (PIN + session + storage).
+// Network (Supabase / signup / OAuth) stays inline for now.
+import {
+  // session
+  getCurrentUser,
+  setCurrentUser,
+  getCurrentProfile,
+  setCurrentProfile,
+  isSignOutInProgress,
+  setSignOutInProgress,
+  registerPinReset,
+  logoutLocalState,
+  // storage
+  LOCAL_PIN_KEY_PREFIX,
+  PIN_LOCKOUT_THRESHOLDS,
+  isWeakPin,
+  getPinLockState,
+  recordPinFailure,
+  clearPinFailures,
+  // pin
+  pinKeyPress,
+  pinDelete,
+  submitPinBuffer,
+  resetPinBuffer,
+  getPinBuffer,
+  bindPinKeypad,
+  pinKeyboardHandler,
+  registerPinHooks,
+} from './features/auth';
 
 // Augment the global Window type so the legacy code that references
 // `window.App.X.*` and the bare-global helpers (icon, parseDate, etc.)
@@ -150,6 +179,22 @@ declare global {
     editingEventId: string | null;
     _pendingRoleKey: string | null;
     _inspiDraft: ReturnType<typeof getInspiDraft>;
+    // TS-10 — auth foundation
+    _currentUser: ReturnType<typeof getCurrentUser>;
+    _currentProfile: ReturnType<typeof getCurrentProfile>;
+    _signOutInProgress: boolean;
+    LOCAL_PIN_KEY_PREFIX: typeof LOCAL_PIN_KEY_PREFIX;
+    PIN_LOCKOUT_THRESHOLDS: typeof PIN_LOCKOUT_THRESHOLDS;
+    isWeakPin: typeof isWeakPin;
+    getPinLockState: () => ReturnType<typeof getPinLockState>;
+    recordPinFailure: () => ReturnType<typeof recordPinFailure>;
+    clearPinFailures: () => void;
+    pinKeyPress: typeof pinKeyPress;
+    pinDelete: typeof pinDelete;
+    submitPinBuffer: typeof submitPinBuffer;
+    bindPinKeypad: typeof bindPinKeypad;
+    logoutLocalState: typeof logoutLocalState;
+    _pinBuffer: string;
   }
 }
 
@@ -274,3 +319,108 @@ Object.defineProperty(window, '_inspiDraft', {
     /* same as above — read-only window mirror. saveInspiLink only reads. */
   },
 });
+
+// ===========================================================================
+// TS-10 — AUTH FOUNDATION (PIN + session + storage)
+// ===========================================================================
+
+// PIN runtime hooks — bridge the inline parts that pin.ts deliberately
+// doesn't import (verifyPin/hashPin = crypto; enterApp/signOutUser =
+// boot/network; haptic/toast = UI primitives still inline). Each is read
+// LAZILY off window so a hooks registration order issue never crashes.
+registerPinHooks({
+  updateDots: () => {
+    const w = window as unknown as { updatePinDots?: () => void };
+    if (typeof w.updatePinDots === 'function') w.updatePinDots();
+  },
+  haptic: (ms) => {
+    const w = window as unknown as { haptic?: (ms: number) => void };
+    if (typeof w.haptic === 'function') w.haptic(ms);
+  },
+  toast: (msg) => {
+    const w = window as unknown as { toast?: (m: string) => void };
+    if (typeof w.toast === 'function') w.toast(msg);
+  },
+  verifyPin: (pin, stored) => {
+    const w = window as unknown as { verifyPin?: (p: string, s: string | null) => Promise<boolean> };
+    if (typeof w.verifyPin === 'function') return w.verifyPin(pin, stored);
+    return Promise.resolve(false);
+  },
+  hashPin: (pin) => {
+    const w = window as unknown as { hashPin?: (p: string) => Promise<string> };
+    if (typeof w.hashPin === 'function') return w.hashPin(pin);
+    return Promise.resolve('');
+  },
+  enterApp: () => {
+    const w = window as unknown as { enterApp?: () => void };
+    if (typeof w.enterApp === 'function') w.enterApp();
+  },
+  signOutUser: () => {
+    const w = window as unknown as { signOutUser?: () => void };
+    if (typeof w.signOutUser === 'function') w.signOutUser();
+  },
+  clearWebAuthnAutoTrigFails: () => {
+    const w = window as unknown as { _clearWebAuthnAutoTrigFails?: () => void };
+    if (typeof w._clearWebAuthnAutoTrigFails === 'function') w._clearWebAuthnAutoTrigFails();
+  },
+});
+
+// Session ↔ PIN cross-wire: session.logoutLocalState() resets the PIN
+// buffer too. We register the reset here so session.ts stays
+// independent of pin.ts at the import-graph level.
+registerPinReset(resetPinBuffer);
+
+// Bare-global re-exposure of constants + helpers.
+window.LOCAL_PIN_KEY_PREFIX = LOCAL_PIN_KEY_PREFIX;
+window.PIN_LOCKOUT_THRESHOLDS = PIN_LOCKOUT_THRESHOLDS;
+window.isWeakPin = isWeakPin;
+window.pinKeyPress = pinKeyPress;
+window.pinDelete = pinDelete;
+window.submitPinBuffer = submitPinBuffer;
+window.bindPinKeypad = bindPinKeypad;
+window.logoutLocalState = logoutLocalState;
+
+// PIN lockout API — the inline call sites use these as if they read the
+// CURRENT user implicitly. We wrap them to inject the active user id.
+window.getPinLockState = () => getPinLockState(getCurrentUser()?.id);
+window.recordPinFailure = () => recordPinFailure(getCurrentUser()?.id);
+window.clearPinFailures = () => clearPinFailures(getCurrentUser()?.id);
+
+// Mutable session bindings — `_currentUser` / `_currentProfile` /
+// `_signOutInProgress` are read AND written from inline (signIn handler
+// sets them; everywhere reads them). Object.defineProperty with both
+// getter and setter mirrors the inline `let` semantics; the TS module
+// stays single source of truth.
+Object.defineProperty(window, '_currentUser', {
+  configurable: true,
+  enumerable: true,
+  get: getCurrentUser,
+  set: (v) => setCurrentUser(v as ReturnType<typeof getCurrentUser>),
+});
+Object.defineProperty(window, '_currentProfile', {
+  configurable: true,
+  enumerable: true,
+  get: getCurrentProfile,
+  set: (v) => setCurrentProfile(v as ReturnType<typeof getCurrentProfile>),
+});
+Object.defineProperty(window, '_signOutInProgress', {
+  configurable: true,
+  enumerable: true,
+  get: isSignOutInProgress,
+  set: (v) => setSignOutInProgress(!!v),
+});
+
+// `_pinBuffer` is read by inline pinTryFaceId() to decide whether to
+// auto-trigger the OS prompt. Read-only window mirror is enough.
+Object.defineProperty(window, '_pinBuffer', {
+  configurable: true,
+  enumerable: true,
+  get: getPinBuffer,
+  set: () => { /* read-only */ },
+});
+
+// Physical-keyboard handler — attached at module-load time so it
+// matches the inline-script behavior exactly. The `offsetParent === null`
+// gate inside pinKeyboardHandler IS the historical bug-guard; see pin.ts
+// header comment + SC39 in the harness.
+document.addEventListener('keydown', pinKeyboardHandler);

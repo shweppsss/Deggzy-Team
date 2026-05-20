@@ -297,23 +297,14 @@ function extractGlobalOutsideClickAsNamedFn() {
 const globalOutsideClickNamedFn = extractGlobalOutsideClickAsNamedFn();
 sources.push(globalOutsideClickNamedFn);
 
-// 0.20 — physical keyboard PIN handler at L10664. The offsetParent gate
-// is documented as a critical fix (the previous wrong check was
-// swallowing Backspace globally). Pinning it as an invariant prevents
-// the bug from returning if the check is reverted.
-function extractPinKeyboardHandlerAsNamedFn() {
-  const marker = '// Physical keyboard support — only while the PIN view';
-  const start = html.indexOf(marker);
-  if (start < 0) throw new Error('PIN keyboard handler marker not found');
-  const after = html.slice(start);
-  const end = after.indexOf('\n});\n');
-  if (end < 0) throw new Error('PIN keyboard handler closing not found');
-  let block = after.slice(0, end + 2);
-  block = block.replace("document.addEventListener('keydown', (e) => {", 'function _pinKeyboardHandlerFn(e) {');
-  return block + '\n';
-}
-const pinKeyboardNamedFn = extractPinKeyboardHandlerAsNamedFn();
-sources.push(pinKeyboardNamedFn);
+// TS-10 — the physical-keyboard PIN handler MOVED to
+// /src/features/auth/pin.ts (exported as `pinKeyboardHandler`).
+// It is bundled via esbuild together with the rest of the auth module
+// below (see __AUTH_BUNDLE__) and re-injected as the named global
+// `_pinKeyboardHandlerFn` so SC22-24 / SC39 still drive the SAME real
+// implementation — just imported through the build graph rather than
+// scraped from index.html. The critical `offsetParent === null` gate
+// is preserved verbatim in pin.ts.
 
 // Account menu uses `const` and `let` in its body, but the functions
 // themselves are plain. We also need to declare `_weekDrag` as a global
@@ -394,6 +385,56 @@ global.closeInspiModal = _modalsExports.closeInspiModal;
 global.openEventModal = _modalsExports.openEventModal;
 global.openRoleModal = _modalsExports.openRoleModal;
 global.openInspiLink = _modalsExports.openInspiLink;
+
+// ---------------------------------------------------------------------------
+// TS-10 — load auth foundation from /src/features/auth/.
+// Same bundling pattern as TS-6/TS-9. Provides:
+//   - _pinKeyboardHandlerFn — physical-keyboard PIN handler (was inline,
+//     pinned by SC22-24, now pinned by SC39 too)
+//   - pinKeyPress / pinDelete / submitPinBuffer / resetPinBuffer — buffer
+//     manipulation, used by SC40 (lockout stability)
+//   - setCurrentUser / getCurrentUser / logoutLocalState — session
+//     accessors, used by SC41 (session cleanup symmetry)
+//   - getPinLockState / recordPinFailure / clearPinFailures — lockout API
+//     (the harness drives these directly to verify SC40 timing)
+// ---------------------------------------------------------------------------
+const authBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'features', 'auth', 'index.ts')],
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  target: 'es2020',
+  write: false,
+  logLevel: 'silent',
+});
+const authCjs = authBundle.outputFiles[0].text;
+const _authMod = { exports: {} };
+(function (module, exports, require) {
+  // eslint-disable-next-line no-eval
+  eval(authCjs);
+})(_authMod, _authMod.exports, require);
+const _authExports = _authMod.exports;
+const _missingAuthFns = [
+  'pinKeyboardHandler', 'pinKeyPress', 'pinDelete', 'submitPinBuffer',
+  'resetPinBuffer', 'setCurrentUser', 'getCurrentUser', 'logoutLocalState',
+  'getPinLockState', 'recordPinFailure', 'clearPinFailures',
+].filter(fn => typeof _authExports[fn] !== 'function');
+if (_missingAuthFns.length) {
+  throw new Error('TS-10 bundle missing exports: ' + _missingAuthFns.join(','));
+}
+// Re-expose with the harness's historical names. The keyboard handler
+// keeps its `_pinKeyboardHandlerFn` alias so SC22-24 reference doesn't move.
+global._pinKeyboardHandlerFn = _authExports.pinKeyboardHandler;
+global.pinKeyPress = _authExports.pinKeyPress;
+global.pinDelete = _authExports.pinDelete;
+global.submitPinBuffer = _authExports.submitPinBuffer;
+global.resetPinBuffer = _authExports.resetPinBuffer;
+global.setCurrentUser = _authExports.setCurrentUser;
+global.getCurrentUser = _authExports.getCurrentUser;
+global.logoutLocalState = _authExports.logoutLocalState;
+global.getPinLockState_auth = _authExports.getPinLockState;
+global.recordPinFailure_auth = _authExports.recordPinFailure;
+global.clearPinFailures_auth = _authExports.clearPinFailures;
 
 // Wrap in IIFE so the extracted functions live in a scope we control.
 // We use `var` declarations explicitly (the extracted source uses `function`
@@ -1198,10 +1239,27 @@ document.getElementById = function (id) {
   return _origGetById.call(document, id);
 };
 
-let pinPressCalls = [];
-let pinDeleteCalls = 0;
-global.pinKeyPress = (d) => pinPressCalls.push(d);
-global.pinDelete = () => { pinDeleteCalls++; };
+// TS-10 — the bundled `_pinKeyboardHandlerFn` imports pinKeyPress /
+// pinDelete from ./pin at build time, so we can't spy via global
+// assignment any more. We check the observable buffer state
+// (`_authExports.getPinBuffer()`) instead — same contract, just
+// downstream of the call. Helpers below mirror the old spy shape
+// to keep SC22/SC23/SC24 assertion text stable.
+const getPinBufferAuth = () => _authExports.getPinBuffer();
+const resetPinBufferAuth = () => _authExports.resetPinBuffer();
+let pinPressCalls = [];   // last digits pressed since last reset
+let pinDeleteCalls = 0;   // count of backspace/delete fires since last reset
+let _bufferBefore = '';   // snapshot so we can detect press / delete events
+function _refreshPinSpies() {
+  const now = getPinBufferAuth();
+  if (now.length > _bufferBefore.length) {
+    // 1+ digits added — record the last one (we only press one at a time)
+    pinPressCalls.push(now.slice(-1));
+  } else if (now.length < _bufferBefore.length) {
+    pinDeleteCalls += 1;
+  }
+  _bufferBefore = now;
+}
 // Make them visible to the eval'd handler too (eval'd code uses bare names).
 // The harness's IIFE eval scope captures globals at call time, so this works.
 
@@ -1222,6 +1280,9 @@ function fireKeyWith(key, modifiers) {
     preventDefault() {},
   };
   list.forEach(l => l.fn(ev));
+  // After firing, refresh the observable-state spies so SC22/SC23/SC24
+  // assertions keep their original shape.
+  _refreshPinSpies();
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,8 +1292,10 @@ console.log('\n=== SCENARIO 22 — pin keyboard handler (visible) ===');
 resetState();
 installPinKeyboard();
 pinViewState.hidden = false;  // pinView visible (offsetParent != null)
+resetPinBufferAuth();
 pinPressCalls = [];
 pinDeleteCalls = 0;
+_bufferBefore = '';
 
 fireKeyWith('5');
 eq('SC22.a digit pressed → pinKeyPress("5") called', pinPressCalls, ['5']);
@@ -1240,6 +1303,10 @@ eq('SC22.a digit pressed → pinKeyPress("5") called', pinPressCalls, ['5']);
 fireKeyWith('Backspace');
 eq('SC22.b Backspace pressed → pinDelete called', pinDeleteCalls, 1);
 
+// Re-press a digit so the next Delete has something to remove. The TS
+// `pinDelete` early-returns on empty buffer (kept verbatim from the
+// inline original) — observable-state spy only counts effects.
+fireKeyWith('5');
 fireKeyWith('Delete');
 eq('SC22.c Delete pressed → pinDelete called again', pinDeleteCalls, 2);
 
@@ -1247,7 +1314,8 @@ eq('SC22.c Delete pressed → pinDelete called again', pinDeleteCalls, 2);
 fireKeyWith('a');
 fireKeyWith('Enter');
 fireKeyWith('Tab');
-eq('SC22.d other keys → no pinKeyPress', pinPressCalls, ['5']);
+// SC22.a digit + SC22.c digit = ['5','5']. Other keys must not add more.
+eq('SC22.d other keys → no pinKeyPress', pinPressCalls, ['5','5']);
 eq('SC22.e other keys → no pinDelete', pinDeleteCalls, 2);
 
 uninstallPinKeyboard();
@@ -1259,8 +1327,10 @@ console.log('\n=== SCENARIO 23 — pin keyboard handler (HIDDEN via offsetParent
 resetState();
 installPinKeyboard();
 pinViewState.hidden = true;  // pinView HIDDEN (offsetParent === null)
+resetPinBufferAuth();
 pinPressCalls = [];
 pinDeleteCalls = 0;
+_bufferBefore = '';
 
 fireKeyWith('5');
 fireKeyWith('Backspace');
@@ -1277,8 +1347,10 @@ console.log('\n=== SCENARIO 24 — pin keyboard handler (modifiers) ===');
 resetState();
 installPinKeyboard();
 pinViewState.hidden = false;
+resetPinBufferAuth();
 pinPressCalls = [];
 pinDeleteCalls = 0;
+_bufferBefore = '';
 
 fireKeyWith('5', { ctrl: true });
 fireKeyWith('5', { meta: true });
@@ -1595,10 +1667,16 @@ tr('SC32.i _weekDrag null after cycle', getWeekDrag() === null);
 // ===========================================================================
 
 // Storage mock with toggle-able failure mode.
+// TS-10 update — 'ok' mode now uses a real backing Map so SC40 can drive
+// recordPinFailure / getPinLockState across multiple calls (the original
+// always-null getItem made the lockout counter unable to accumulate).
+// Failure modes (setItem-throws / getItem-invalid-json / unavailable)
+// still bypass the Map so SC33-36 assertions stay valid.
 const storageMock = {
   _mode: 'ok',  // 'ok' | 'setItem-throws' | 'getItem-invalid-json' | 'unavailable'
   _setItemCount: 0,
   _getItemCount: 0,
+  _store: new Map(),
   setItem(k, v) {
     this._setItemCount++;
     if (this._mode === 'setItem-throws' || this._mode === 'unavailable') {
@@ -1606,6 +1684,7 @@ const storageMock = {
       err.name = 'QuotaExceededError';
       throw err;
     }
+    this._store.set(k, String(v));
   },
   getItem(k) {
     this._getItemCount++;
@@ -1615,10 +1694,10 @@ const storageMock = {
     if (this._mode === 'getItem-invalid-json') {
       return '{{{not-valid-json}}}';
     }
-    return null;
+    return this._store.has(k) ? this._store.get(k) : null;
   },
-  removeItem(k) {},
-  clear() {},
+  removeItem(k) { this._store.delete(k); },
+  clear() { this._store.clear(); },
 };
 global.localStorage = storageMock;
 
@@ -1818,6 +1897,175 @@ tr('SC38.e after 2nd ESC: detail closed', detailOverlayState.open === false);
 eq('SC38.f after 2nd ESC: body.overflow restored', document.body.style.overflow, '');
 
 uninstallGlobalEsc();
+
+// ===========================================================================
+// SCENARIO 39 — Hidden PIN view keyboard isolation (TS-10)
+// ===========================================================================
+// Pins the historical "Backspace swallowed globally" bug. Contract:
+//   - PIN view HIDDEN (offsetParent === null) → Backspace MUST NOT be
+//     intercepted (pinDelete is not called, preventDefault is not called).
+//   - PIN view VISIBLE (offsetParent !== null) → Backspace IS intercepted.
+//
+// Stronger than SC22/23 because SC39 explicitly toggles visibility
+// between firings and verifies the gate flips on every transition.
+// ===========================================================================
+console.log('\n=== SCENARIO 39 — hidden PIN view keyboard isolation (TS-10) ===');
+resetState();
+installPinKeyboard();
+
+// Track preventDefault calls so we can prove the handler is genuinely
+// inert when the view is hidden (no e.preventDefault, no buffer change).
+let _preventCount = 0;
+function fireKeyTracked(key) {
+  const list = docListeners.keydown.slice();
+  const ev = {
+    key, metaKey: false, ctrlKey: false, altKey: false,
+    preventDefault() { _preventCount += 1; },
+  };
+  list.forEach(l => l.fn(ev));
+  _refreshPinSpies();
+}
+
+// Visible → Backspace is handled (preventDefault + pinDelete fired)
+pinViewState.hidden = false;
+resetPinBufferAuth();
+_bufferBefore = '';
+pinPressCalls = [];
+pinDeleteCalls = 0;
+_preventCount = 0;
+fireKeyTracked('5');               // buffer = '5'
+fireKeyTracked('Backspace');       // buffer = ''
+eq('SC39.a VISIBLE: digit + Backspace fully handled', { p: pinPressCalls, d: pinDeleteCalls, pd: _preventCount }, { p: ['5'], d: 1, pd: 2 });
+
+// Hidden → ALL keys pass through (no preventDefault, no buffer change)
+pinViewState.hidden = true;
+resetPinBufferAuth();
+_bufferBefore = '';
+pinPressCalls = [];
+pinDeleteCalls = 0;
+_preventCount = 0;
+fireKeyTracked('5');
+fireKeyTracked('Backspace');
+fireKeyTracked('Delete');
+fireKeyTracked('7');
+eq('SC39.b HIDDEN: 0 preventDefault calls (key events propagate normally)', _preventCount, 0);
+eq('SC39.c HIDDEN: 0 buffer mutations (handler inert)', { p: pinPressCalls.length, d: pinDeleteCalls }, { p: 0, d: 0 });
+eq('SC39.d HIDDEN: pin buffer stays empty', getPinBufferAuth(), '');
+
+// Toggle back to visible — must re-arm cleanly
+pinViewState.hidden = false;
+fireKeyTracked('3');
+eq('SC39.e re-VISIBLE: handler re-armed immediately', getPinBufferAuth(), '3');
+
+uninstallPinKeyboard();
+
+// ===========================================================================
+// SCENARIO 40 — Lockout stability (TS-10)
+// ===========================================================================
+// Drive the storage layer directly through `recordPinFailure` to verify
+// the escalation table (3/30s, 6/5min, 10/30min, 15/signOut) and that
+// repeated calls don't drift counter / corrupt state.
+// ===========================================================================
+console.log('\n=== SCENARIO 40 — lockout stability (TS-10) ===');
+// localStorage mock (already used by SC33-36) — clear any leftover lock row.
+resetStorageMock('ok');
+const TEST_UID = 'test-user-sc40';
+try { localStorage.removeItem('degzzy_pin_lock_' + TEST_UID); } catch (_e) {}
+
+// Drive the raw lockout API directly via the bundle's exports (matches
+// how the inline submitPinBuffer uses them in production). All take
+// the userId explicitly so the test is hermetic.
+const rec = (uid) => _authExports.recordPinFailure(uid);
+const getLock = (uid) => _authExports.getPinLockState(uid);
+const clear = (uid) => _authExports.clearPinFailures(uid);
+
+// Drive 14 failures (just under SIGNOUT). Each call returns the updated
+// `{count, lockedUntil}` — count should equal i+1 each time, no drift.
+let _sc40LockSnapshots = [];
+for (let i = 0; i < 14; i++) {
+  const r = rec(TEST_UID);
+  _sc40LockSnapshots.push({ count: r.count, locked: r.lockedUntil > 0 });
+}
+
+// Threshold transitions: 3=W30S, 6=W5MIN, 10=W30MIN (locked: true)
+//                       counts 1,2,4,5,7,8,9,11,12,13 should also be locked
+//                       (the lock-until carries over until cleared / expired)
+eq('SC40.a count grew monotonically from 1 to 14', _sc40LockSnapshots.map(s => s.count), [1,2,3,4,5,6,7,8,9,10,11,12,13,14]);
+
+// At count 3, lock kicks in (30s). At 6 it escalates (5min). At 10 (30min).
+// All snapshots from index 2 (count=3) onward should be `locked: true`.
+tr('SC40.b lockout fires at count=3 (W30S)', _sc40LockSnapshots[2].locked === true);
+tr('SC40.c lockout still active at count=5', _sc40LockSnapshots[4].locked === true);
+tr('SC40.d lockout escalation at count=6 (W5MIN)', _sc40LockSnapshots[5].locked === true);
+tr('SC40.e lockout escalation at count=10 (W30MIN)', _sc40LockSnapshots[9].locked === true);
+
+// 15th failure triggers SIGNOUT threshold (1h). Counter saturates at 15.
+const r15 = rec(TEST_UID);
+tr('SC40.f count=15 = SIGNOUT threshold reached', r15.count === 15);
+tr('SC40.g count=15 lock is set to a future deadline (~1h ahead)', r15.lockedUntil > Date.now() + 30 * 60 * 1000);
+
+// `getPinLockState` reads the live storage and computes remainingSec.
+const finalState = getLock(TEST_UID);
+tr('SC40.h getPinLockState reads consistent count', finalState.count === 15);
+tr('SC40.i getPinLockState reports isLocked', finalState.isLocked === true);
+tr('SC40.j remainingSec is in (0, 3600] range', finalState.remainingSec > 0 && finalState.remainingSec <= 3600);
+
+// Clear API resets to zero
+clear(TEST_UID);
+const cleared = getLock(TEST_UID);
+eq('SC40.k clearPinFailures resets state', cleared, { count: 0, lockedUntil: 0, isLocked: false, remainingSec: 0 });
+
+// ===========================================================================
+// SCENARIO 41 — Session cleanup symmetry (TS-10)
+// ===========================================================================
+// Open session → mutate state → logout → re-open. Verify:
+//   - logoutLocalState() clears _currentUser, _currentProfile, PIN buffer
+//   - re-setting currentUser does not resurrect stale PIN state
+//   - lockout row from a previous user does not leak (cleared explicitly)
+// ===========================================================================
+console.log('\n=== SCENARIO 41 — session cleanup symmetry (TS-10) ===');
+
+// Reset PIN buffer in case a prior scenario left a digit behind.
+_authExports.resetPinBuffer();
+
+// Open session — set a user, push some PIN failures, drop a digit in the buffer
+_authExports.setCurrentUser({ id: 'u1', email: 'one@test' });
+_authExports.setCurrentProfile({ name: 'User One', role: 'Autre' });
+_authExports.recordPinFailure('u1');
+_authExports.recordPinFailure('u1');
+// Drop a digit into the buffer via the public API (the handler does this
+// in production; harness drives it directly).
+_authExports.pinKeyPress('7');
+
+eq('SC41.a setup: user + profile set, lockout count=2, buffer="7"', {
+  uid: _authExports.getCurrentUser()?.id,
+  name: _authExports.getCurrentProfile()?.name,
+  count: _authExports.getPinLockState('u1').count,
+  buf: _authExports.getPinBuffer(),
+}, { uid: 'u1', name: 'User One', count: 2, buf: '7' });
+
+// Logout — sync local cleanup
+_authExports.logoutLocalState();
+eq('SC41.b after logoutLocalState: user cleared', _authExports.getCurrentUser(), null);
+eq('SC41.c after logoutLocalState: profile cleared', _authExports.getCurrentProfile(), null);
+eq('SC41.d after logoutLocalState: PIN buffer reset', _authExports.getPinBuffer(), '');
+
+// Lockout STATE is preserved (per-user, persisted in localStorage). The
+// inline signOutUser path is responsible for clearing the storage row when
+// the user resets their PIN — this is correct behavior per the auth audit.
+const lockedAfter = _authExports.getPinLockState('u1');
+tr('SC41.e lockout row persists for u1 (correct — auth audit C)', lockedAfter.count === 2);
+
+// Re-open session with a DIFFERENT user — verify no leakage from u1
+_authExports.setCurrentUser({ id: 'u2', email: 'two@test' });
+const u2Lock = _authExports.getPinLockState('u2');
+eq('SC41.f re-login as u2: u2 lockout is fresh (no leak from u1)', u2Lock, { count: 0, lockedUntil: 0, isLocked: false, remainingSec: 0 });
+
+// Cleanup
+_authExports.clearPinFailures('u1');
+_authExports.setCurrentUser(null);
+_authExports.setCurrentProfile(null);
+try { localStorage.removeItem('degzzy_pin_lock_u1'); } catch (_e) {}
 
 // ---------------------------------------------------------------------------
 // SUMMARY
