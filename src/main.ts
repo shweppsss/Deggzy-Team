@@ -62,6 +62,25 @@ import {
   actorColor,
   eventActorAvatarHTML,
 } from './features/detail/event-actor';
+import {
+  openEventModal,
+  closeEventModal,
+  setEventVisibility,
+  refreshRecurrenceUntilVisibility,
+  getEditingEventId,
+  setEditingEventId,
+  openRoleModal,
+  closeRoleModal,
+  selectRole,
+  getPendingRoleKey,
+  openInspiLink,
+  closeInspiModal,
+  showInspiPreview,
+  clearInspiDraft,
+  handleInspiUrlChange,
+  handleInspiModalFile,
+  getInspiDraft,
+} from './features/modals';
 
 // Augment the global Window type so the legacy code that references
 // `window.App.X.*` and the bare-global helpers (icon, parseDate, etc.)
@@ -113,6 +132,24 @@ declare global {
     _actorInitial: typeof actorInitial;
     _actorColor: typeof actorColor;
     _eventActorAvatarHTML: typeof eventActorAvatarHTML;
+    // TS-9 — modals (event / role / inspi)
+    openEventModal: typeof openEventModal;
+    closeEventModal: typeof closeEventModal;
+    _setEventVisibility: typeof setEventVisibility;
+    _refreshRecurrenceUntilVisibility: typeof refreshRecurrenceUntilVisibility;
+    openRoleModal: typeof openRoleModal;
+    closeRoleModal: typeof closeRoleModal;
+    _selectRole: typeof selectRole;
+    openInspiLink: typeof openInspiLink;
+    closeInspiModal: typeof closeInspiModal;
+    showInspiPreview: typeof showInspiPreview;
+    clearInspiDraft: typeof clearInspiDraft;
+    handleInspiUrlChange: typeof handleInspiUrlChange;
+    handleInspiModalFile: typeof handleInspiModalFile;
+    // Mutable bindings the inline save flows read.
+    editingEventId: string | null;
+    _pendingRoleKey: string | null;
+    _inspiDraft: ReturnType<typeof getInspiDraft>;
   }
 }
 
@@ -191,3 +228,49 @@ window.PRIORITY_LABELS = PRIORITY_LABELS;
 window._actorInitial = actorInitial;
 window._actorColor = actorColor;
 window._eventActorAvatarHTML = eventActorAvatarHTML;
+
+// TS-9 — modal lifecycle. The inline save flows (saveEvent / saveRole /
+// saveInspiLink) and the global ESC + outside-click delegates in
+// index.html call these by their bare names. We also bridge the 3
+// mutable bindings (editingEventId, _pendingRoleKey, _inspiDraft)
+// through accessor functions so the inline save flows can read the
+// current value without our TS module losing single-source-of-truth.
+window.openEventModal = openEventModal;
+window.closeEventModal = closeEventModal;
+window._setEventVisibility = setEventVisibility;
+window._refreshRecurrenceUntilVisibility = refreshRecurrenceUntilVisibility;
+window.openRoleModal = openRoleModal;
+window.closeRoleModal = closeRoleModal;
+window._selectRole = selectRole;
+window.openInspiLink = openInspiLink;
+window.closeInspiModal = closeInspiModal;
+window.showInspiPreview = showInspiPreview;
+window.clearInspiDraft = clearInspiDraft;
+window.handleInspiUrlChange = handleInspiUrlChange;
+window.handleInspiModalFile = handleInspiModalFile;
+// Mirror the mutable bindings via getter/setter properties so the inline
+// save flow can `editingEventId = null` and the TS module sees it.
+Object.defineProperty(window, 'editingEventId', {
+  configurable: true,
+  enumerable: true,
+  get: getEditingEventId,
+  set: setEditingEventId,
+});
+Object.defineProperty(window, '_pendingRoleKey', {
+  configurable: true,
+  enumerable: true,
+  get: getPendingRoleKey,
+  set: () => {
+    /* read-only from window; setting is a no-op intentionally — the
+       inline saveRole only reads. If a future flow needs to clear it,
+       call closeRoleModal() which does so. */
+  },
+});
+Object.defineProperty(window, '_inspiDraft', {
+  configurable: true,
+  enumerable: true,
+  get: getInspiDraft,
+  set: () => {
+    /* same as above — read-only window mirror. saveInspiLink only reads. */
+  },
+});

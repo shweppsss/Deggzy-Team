@@ -13275,116 +13275,26 @@ function changeMonth(delta) {
   renderCalendar();
 }
 
-let editingEventId = null;
-function openEventModal(date = null, eventId = null) {
-  const modal = document.getElementById('eventModal');
-  modal.classList.add('open');
-  document.getElementById('eventDelete').style.display = eventId ? 'inline-flex' : 'none';
-  if (eventId) {
-    editingEventId = eventId;
-    const e = state.events.find(x => x.id === eventId);
-    document.getElementById('eventModalTitle').textContent = 'Modifier événement';
-    document.getElementById('eventTitle').value = e.title;
-    document.getElementById('eventDate').value = e.date;
-    document.getElementById('eventTime').value = e.time || '';
-    document.getElementById('eventDuration').value = String(e.duration || 60);
-    document.getElementById('eventType').value = e.type;
-    document.getElementById('eventLocation').value = e.location || '';
-    document.getElementById('eventWith').value = e.with || '';
-    document.getElementById('eventNotes').value = e.notes || '';
-    document.getElementById('eventTags').value = tagsToInput(e.tags);
-    document.getElementById('eventEndDate').value = e.endDate || '';
-    document.getElementById('eventRecurrence').value = (e.recurrence && e.recurrence.freq) || 'none';
-    document.getElementById('eventRecurrenceUntil').value = (e.recurrence && e.recurrence.until) || '';
-    _setEventVisibility(e.visibility === 'private' ? 'private' : 'team');
-  } else {
-    editingEventId = null;
-    document.getElementById('eventModalTitle').textContent = 'Nouvel événement';
-    document.getElementById('eventTitle').value = '';
-    document.getElementById('eventDate').value = date || new Date().toISOString().slice(0,10);
-    document.getElementById('eventTime').value = '';
-    document.getElementById('eventDuration').value = '60';
-    document.getElementById('eventType').value = 'meeting';
-    document.getElementById('eventLocation').value = '';
-    document.getElementById('eventWith').value = '';
-    document.getElementById('eventNotes').value = '';
-    document.getElementById('eventTags').value = '';
-    document.getElementById('eventEndDate').value = '';
-    document.getElementById('eventRecurrence').value = 'none';
-    document.getElementById('eventRecurrenceUntil').value = '';
-    _setEventVisibility('team');
-  }
-  _refreshRecurrenceUntilVisibility();
-}
-
-// "Jusqu'au" only makes sense once a recurrence is picked; hide it for "Aucune".
-function _refreshRecurrenceUntilVisibility() {
-  const freq = (document.getElementById('eventRecurrence') || {}).value || 'none';
-  const wrap = document.getElementById('eventRecurrenceUntilField');
-  if (wrap) wrap.style.display = freq === 'none' ? 'none' : '';
-}
-
-// Sync the hidden input + active state on the segmented visibility toggle.
-// Called from the modal's <button> onclick handlers and from openEventModal.
-function _setEventVisibility(value) {
-  const v = value === 'private' ? 'private' : 'team';
-  const hidden = document.getElementById('eventVisibility');
-  if (hidden) hidden.value = v;
-  document.querySelectorAll('#eventModal .visibility-option').forEach(btn => {
-    const active = btn.dataset.visibility === v;
-    btn.classList.toggle('active', active);
-    btn.setAttribute('aria-checked', active ? 'true' : 'false');
-  });
-}
-
-function closeEventModal() {
-  document.getElementById('eventModal').classList.remove('open');
-}
+// editingEventId — moved to /src/features/modals/event-modal.ts. The
+// legacy inline declaration is gone; `editingEventId` resolves to a
+// window getter/setter mounted by /src/main.ts.
+// openEventModal + closeEventModal + _setEventVisibility +
+// _refreshRecurrenceUntilVisibility — EXTRACTED in Phase TS-9 to
+// /src/features/modals/event-modal.ts. Re-attached on window via /src/main.ts.
+// The `editingEventId` binding is now a window getter/setter backed by the
+// TS module's module-private state; legacy inline `saveEvent` reads it as
+// a bare identifier and resolves it through the global scope chain.
 
 /* ============================
    ROLE MODAL — pick your role, persist to profile, propagate to dashboard.
    Stored on _currentProfile.role (Supabase profiles table) AND mirrored into
    state.user.role so the legacy header chip stays accurate without a re-fetch.
    ============================ */
-const _ROLE_DESCRIPTIONS = {
-  'artiste':           'Tes sorties, sessions studio, interviews, podcasts.',
-  'manager':           'Vue globale équipe, blocages, releases à risque.',
-  'ingenieur-son':     'Mixs, masters, sessions studio, exports audio.',
-  'producteur':        'Beats, sessions, exports, listening, milestones.',
-  'realisateur':       'Clips, shoots, montages, validations vidéo.',
-  'monteur':           'Montages, exports vidéo, livraisons clips.',
-  'graphiste':         'Covers, assets, exports branding, livraisons.',
-  'community-manager': 'Posts, campagnes, TikTok / Insta, timing promo.',
-  'autre':             'Vue par défaut. Tu pourras affiner plus tard.',
-};
-let _pendingRoleKey = null;
-function openRoleModal() {
-  if (typeof hideAccountMenu === 'function') hideAccountMenu();
-  const modal = document.getElementById('roleModal');
-  if (!modal) return;
-  const grid = document.getElementById('roleModalGrid');
-  const currentKey = getCurrentRoleKey();
-  _pendingRoleKey = currentKey;
-  grid.innerHTML = ROLES.map(r => `
-    <button type="button" class="role-option ${r.key === currentKey ? 'active' : ''}"
-            data-role-key="${escapeHtml(r.key)}"
-            onclick="_selectRole('${escapeHtml(r.key)}')">
-      <span class="role-option-label">${escapeHtml(r.label)}</span>
-      <span class="role-option-sub">${escapeHtml(_ROLE_DESCRIPTIONS[r.key] || '')}</span>
-    </button>
-  `).join('');
-  modal.classList.add('open');
-}
-function _selectRole(key) {
-  _pendingRoleKey = key;
-  document.querySelectorAll('#roleModalGrid .role-option').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.roleKey === key);
-  });
-}
-function closeRoleModal() {
-  document.getElementById('roleModal').classList.remove('open');
-  _pendingRoleKey = null;
-}
+// openRoleModal + closeRoleModal + _selectRole + _ROLE_DESCRIPTIONS +
+// _pendingRoleKey — EXTRACTED in Phase TS-9 to /src/features/modals/role-modal.ts.
+// Re-attached on window via /src/main.ts. The `_pendingRoleKey` binding
+// is a window getter backed by the TS module; saveRole (still inline)
+// reads it via the global scope chain.
 async function saveRole() {
   const key = _pendingRoleKey || 'autre';
   const role = ROLE_BY_KEY[key];
@@ -15459,101 +15369,13 @@ async function handleInspiUpload(ev) {
   ev.target.value = '';
 }
 
-// Working draft of the inspiration being composed in the modal
-let _inspiDraft = null;
-
-function openInspiLink() {
-  _inspiDraft = null;
-  document.getElementById('inspiModal').classList.add('open');
-  document.getElementById('inspiTitle').value = '';
-  document.getElementById('inspiUrl').value = '';
-  document.getElementById('inspiNotes').value = '';
-  document.getElementById('inspiType').value = 'link';
-  document.getElementById('inspiCategory').value = 'Mood';
-  const previewWrap = document.getElementById('inspiPreviewWrap');
-  const defaultBox = document.getElementById('inspiDropzoneDefault');
-  if (previewWrap) { previewWrap.innerHTML = ''; previewWrap.hidden = true; }
-  if (defaultBox) defaultBox.hidden = false;
-}
-function closeInspiModal() {
-  document.getElementById('inspiModal').classList.remove('open');
-  _inspiDraft = null;
-}
-
-// File upload — modal context
-async function handleInspiModalFile(file) {
-  if (!file) return;
-  if (!checkFileSize(file)) return;
-  try {
-    // Preview uses a transient blob URL (revoked when draft is cleared) — NOT a base64 data URL.
-    // The actual blob lives on the draft object and is committed to IDB on save.
-    const previewUrl = URL.createObjectURL(file);
-    const isVideo = (file.type || '').startsWith('video');
-    _inspiDraft = {
-      mediaType: isVideo ? 'video' : 'image',
-      mediaUrl: previewUrl,
-      mediaEmbed: '',
-      provider: '',
-      _filename: file.name,
-      _file: file,
-      _isLocalBlob: true,
-    };
-    showInspiPreview();
-    // Auto-prefill title from filename if user hasn't typed
-    const titleInput = document.getElementById('inspiTitle');
-    if (titleInput && !titleInput.value.trim()) {
-      titleInput.value = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
-    }
-  } catch (e) {
-    toast('Erreur de chargement.');
-  }
-}
-
-// URL field — live auto-detection
-function handleInspiUrlChange() {
-  const url = document.getElementById('inspiUrl').value.trim();
-  if (!url) { _inspiDraft = null; showInspiPreview(); return; }
-  const parsed = parseMedia(url);
-  if (!parsed) return;
-  _inspiDraft = parsed;
-  showInspiPreview();
-}
-
-function showInspiPreview() {
-  const previewWrap = document.getElementById('inspiPreviewWrap');
-  const defaultBox = document.getElementById('inspiDropzoneDefault');
-  if (!previewWrap || !defaultBox) return;
-  if (!_inspiDraft) {
-    previewWrap.innerHTML = '';
-    previewWrap.hidden = true;
-    defaultBox.hidden = false;
-    return;
-  }
-  let inner = '';
-  const d = _inspiDraft;
-  if (d.mediaType === 'image') {
-    inner = `<img src="${d.mediaUrl}" alt="Preview" class="inspi-preview-img" />`;
-  } else if (d.mediaType === 'video') {
-    inner = `<video src="${d.mediaUrl}" class="inspi-preview-img" controls muted playsinline></video>`;
-  } else if (d.mediaType === 'embed' && d.mediaEmbed) {
-    const aspect = d.aspect || '16/9';
-    inner = `<div class="inspi-preview-embed" style="aspect-ratio:${aspect};">${d.mediaEmbed}</div>`;
-  } else if (d.mediaType === 'embed' && d.provider === 'tiktok') {
-    inner = `<div class="inspi-preview-link">${icon('link', 18)} <span>TikTok détecté — sera affiché en card</span></div>`;
-  } else {
-    inner = `<div class="inspi-preview-link">${icon('link', 18)} <span>${escapeHtml(d.mediaUrl || '')}</span></div>`;
-  }
-  inner += `<button type="button" class="inspi-preview-clear" onclick="clearInspiDraft()" aria-label="Retirer">${icon('close', 14)}</button>`;
-  previewWrap.innerHTML = inner;
-  previewWrap.hidden = false;
-  defaultBox.hidden = true;
-}
-
-function clearInspiDraft() {
-  _inspiDraft = null;
-  document.getElementById('inspiUrl').value = '';
-  showInspiPreview();
-}
+// openInspiLink + closeInspiModal + handleInspiModalFile +
+// handleInspiUrlChange + showInspiPreview + clearInspiDraft +
+// _inspiDraft — EXTRACTED in Phase TS-9 to
+// /src/features/modals/inspi-modal.ts. Re-attached on window via
+// /src/main.ts. The `_inspiDraft` binding is a window getter backed
+// by the TS module; saveInspiLink (still inline) reads it via the
+// global scope chain.
 
 async function saveInspiLink() {
   const title = document.getElementById('inspiTitle').value.trim();

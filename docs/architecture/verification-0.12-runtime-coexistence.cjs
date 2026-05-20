@@ -253,9 +253,10 @@ const sources = [
   // appear in index.html so extractFn() would throw on them.
   // 0.16 — close functions for the 3 other modals, so the global ESC
   // routing can drive them through their real close path (not a stub).
-  extractFn('closeEventModal'),
-  extractFn('closeRoleModal'),
-  extractFn('closeInspiModal'),
+  // TS-9 — closeEventModal / closeRoleModal / closeInspiModal MOVED to
+  // /src/features/modals/. They are bundled via esbuild below (see
+  // __MODALS_BUNDLE__) and re-injected as bare globals. No longer in
+  // index.html so extractFn() can't find them.
 ];
 
 // 0.14 — extract the global ESC keydown handler from index.html and wrap
@@ -359,6 +360,41 @@ global.openDetail = _detailExports.openDetail;
 global.closeDetail = _detailExports.closeDetail;
 global.bindDetailClose = _detailExports.bindDetailClose;
 
+// ---------------------------------------------------------------------------
+// TS-9 — load 3 modal close functions from /src/features/modals/.
+// Same pattern as TS-6 detail: bundle via esbuild, eval in isolated scope,
+// expose on globals for the harness eval scope below.
+// ---------------------------------------------------------------------------
+const modalsBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'features', 'modals', 'index.ts')],
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  target: 'es2020',
+  write: false,
+  logLevel: 'silent',
+});
+const modalsCjs = modalsBundle.outputFiles[0].text;
+const _modalsMod = { exports: {} };
+(function (module, exports, require) {
+  // eslint-disable-next-line no-eval
+  eval(modalsCjs);
+})(_modalsMod, _modalsMod.exports, require);
+const _modalsExports = _modalsMod.exports;
+const _missingModalFns = ['closeEventModal', 'closeRoleModal', 'closeInspiModal']
+  .filter(fn => typeof _modalsExports[fn] !== 'function');
+if (_missingModalFns.length) {
+  throw new Error('TS-9 bundle missing close fns: ' + _missingModalFns.join(','));
+}
+global.closeEventModal = _modalsExports.closeEventModal;
+global.closeRoleModal = _modalsExports.closeRoleModal;
+global.closeInspiModal = _modalsExports.closeInspiModal;
+// Also expose the open / draft surface so the new modal-stability
+// scenarios (added below) can exercise the real lifecycle.
+global.openEventModal = _modalsExports.openEventModal;
+global.openRoleModal = _modalsExports.openRoleModal;
+global.openInspiLink = _modalsExports.openInspiLink;
+
 // Wrap in IIFE so the extracted functions live in a scope we control.
 // We use `var` declarations explicitly (the extracted source uses `function`
 // declarations which hoist).
@@ -397,6 +433,12 @@ const harness = `
     closeEventModal,
     closeRoleModal,
     closeInspiModal,
+    // TS-9 — open surface of the 3 modals, loaded from the bundled TS
+    // module above. Used by SC37 (re-open stability) and SC38 (ESC
+    // precedence) to exercise the real lifecycle, not just the close path.
+    openEventModal,
+    openRoleModal,
+    openInspiLink,
     _globalEscRoutingFn,
     _globalModalOutsideClickFn,
     _pinKeyboardHandlerFn,
@@ -1688,6 +1730,94 @@ eq('SC36.b max listeners at end of any iteration: 0 (no cumulative drift)', maxL
 
 // Reset storage to OK so any subsequent debugging is sane
 resetStorageMock('ok');
+
+// ===========================================================================
+// SCENARIO 37 — Modal re-open stability (TS-9 — added with modals extraction)
+// ===========================================================================
+// Open / close ×50 for each modal. Verify after each cycle:
+//   - no residual document keydown listener (the modal lifecycle itself
+//     attaches none; SC37 confirms it stays that way after a stress run)
+//   - no double-attach drift (count never exceeds 1 — the global ESC handler
+//     attached once at scenario start)
+//   - the closed-state of each modal element resets cleanly
+// ===========================================================================
+console.log('\n=== SCENARIO 37 — modal re-open stability ×50 each ===');
+resetState();
+resetDetailState();
+installGlobalEsc(); // baseline keydown listener (1)
+const baselineKeydown = listenerCounts().keydown;
+
+// Force-reset each modal's open state. The harness's makeModalEl mocks
+// have a `_state.open` flag tracked through classList.add('open').
+function resetModal(el) {
+  el.classList.remove('open');
+}
+resetModal(eventModalEl);
+resetModal(roleModalEl);
+resetModal(inspiModalEl);
+
+let modalCycleErrs = [];
+for (let i = 0; i < 50; i++) {
+  try {
+    F.openEventModal();
+    F.closeEventModal();
+    F.openInspiLink();
+    F.closeInspiModal();
+    // roleModal needs a populated ROLES list; otherwise its open is a no-op
+    // (the harness doesn't set ROLES on window). We still exercise the close
+    // path to confirm hideModal doesn't accumulate listeners.
+    F.closeRoleModal();
+  } catch (e) {
+    modalCycleErrs.push(String(i) + ':' + e.message);
+  }
+}
+
+eq('SC37.a no exception across 50 open/close cycles', modalCycleErrs.slice(0, 3), []);
+eq('SC37.b keydown listeners unchanged (baseline preserved)', listenerCounts().keydown, baselineKeydown);
+eq('SC37.c no click/pointer listeners leaked', { click: listenerCounts().click, pointermove: listenerCounts().pointermove }, { click: 0, pointermove: 0 });
+tr('SC37.d eventModal closed', eventModalEl._state.open === false);
+tr('SC37.e roleModal closed', roleModalEl._state.open === false);
+tr('SC37.f inspiModal closed', inspiModalEl._state.open === false);
+
+uninstallGlobalEsc();
+
+// ===========================================================================
+// SCENARIO 38 — ESC precedence: modal closes BEFORE detail (TS-9)
+// ===========================================================================
+// The 0.21 SC28 already verified the modal-vs-detail close order on the
+// global ESC routing. SC38 re-runs that contract against the post-TS-9
+// modals — same expectation: ESC closes the modal first, detail still
+// open, body.overflow still locked. Second ESC closes detail.
+// ===========================================================================
+console.log('\n=== SCENARIO 38 — ESC precedence: modal closes BEFORE detail (TS-9) ===');
+resetState();
+resetDetailState();
+installGlobalEsc();
+
+// Open detail then eventModal
+F.openDetail('event', 'evt-1');
+eventModalEl.classList.add('open');
+eq('SC38.a setup: detail open + eventModal open + body locked', {
+  detail: detailOverlayState.open,
+  modal: eventModalEl._state.open,
+  overflow: document.body.style.overflow,
+}, { detail: true, modal: true, overflow: 'hidden' });
+
+// First ESC — modal closes, detail stays open.
+// The mock document doesn't auto-dispatch; iterate the listener list
+// directly (same pattern SC28 uses).
+const escEvent = { key: 'Escape', target: { tagName: 'BODY' } };
+docListeners.keydown.forEach(l => l.fn(escEvent));
+tr('SC38.b after 1st ESC: eventModal closed', eventModalEl._state.open === false);
+tr('SC38.c after 1st ESC: detail STILL open', detailOverlayState.open === true);
+eq('SC38.d after 1st ESC: body.overflow STILL locked', document.body.style.overflow, 'hidden');
+
+// Second ESC — detail closes
+docListeners.keydown.forEach(l => l.fn(escEvent));
+tr('SC38.e after 2nd ESC: detail closed', detailOverlayState.open === false);
+eq('SC38.f after 2nd ESC: body.overflow restored', document.body.style.overflow, '');
+
+uninstallGlobalEsc();
 
 // ---------------------------------------------------------------------------
 // SUMMARY
