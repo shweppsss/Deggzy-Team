@@ -91,7 +91,6 @@ import {
   setCurrentProfile,
   isSignOutInProgress,
   setSignOutInProgress,
-  registerPinReset,
   logoutLocalState,
   // storage
   LOCAL_PIN_KEY_PREFIX,
@@ -108,7 +107,19 @@ import {
   getPinBuffer,
   bindPinKeypad,
   pinKeyboardHandler,
-  registerPinHooks,
+  // TS-11 — network + orchestration
+  hashPin,
+  verifyPin,
+  setSupabaseClient,
+  signInWithPassword,
+  signUpWithPassword,
+  supabaseSignOut,
+  getSession,
+  signOutUserOrchestrated,
+  signInUserOrchestrated,
+  attachAuthStateListener,
+  registerAuthLifecycleHooks,
+  wireAuthHooks,
 } from './features/auth';
 
 // Augment the global Window type so the legacy code that references
@@ -195,6 +206,14 @@ declare global {
     bindPinKeypad: typeof bindPinKeypad;
     logoutLocalState: typeof logoutLocalState;
     _pinBuffer: string;
+    // TS-11 — auth network surface
+    hashPin: typeof hashPin;
+    verifyPin: typeof verifyPin;
+    signInUserTS: (email: string, password: string) => Promise<{ ok: boolean; user: unknown; errorMessage?: string }>;
+    signOutUserTS: () => Promise<void>;
+    getSessionTS: typeof getSession;
+    // Inline Supabase client — created by the inline initSupabase() call.
+    sb: unknown;
   }
 }
 
@@ -324,11 +343,12 @@ Object.defineProperty(window, '_inspiDraft', {
 // TS-10 — AUTH FOUNDATION (PIN + session + storage)
 // ===========================================================================
 
-// PIN runtime hooks — bridge the inline parts that pin.ts deliberately
-// doesn't import (verifyPin/hashPin = crypto; enterApp/signOutUser =
-// boot/network; haptic/toast = UI primitives still inline). Each is read
-// LAZILY off window so a hooks registration order issue never crashes.
-registerPinHooks({
+// TS-11 — PIN hooks are now wired via `wireAuthHooks` (verifyPin / hashPin /
+// signOutUser come from TS modules directly). Only the UI primitives
+// (updateDots / haptic / toast / enterApp / clearWebAuthnAutoTrigFails)
+// still cross into inline territory — they're concerns owned by other
+// domains that will migrate separately.
+wireAuthHooks({
   updateDots: () => {
     const w = window as unknown as { updatePinDots?: () => void };
     if (typeof w.updatePinDots === 'function') w.updatePinDots();
@@ -341,23 +361,9 @@ registerPinHooks({
     const w = window as unknown as { toast?: (m: string) => void };
     if (typeof w.toast === 'function') w.toast(msg);
   },
-  verifyPin: (pin, stored) => {
-    const w = window as unknown as { verifyPin?: (p: string, s: string | null) => Promise<boolean> };
-    if (typeof w.verifyPin === 'function') return w.verifyPin(pin, stored);
-    return Promise.resolve(false);
-  },
-  hashPin: (pin) => {
-    const w = window as unknown as { hashPin?: (p: string) => Promise<string> };
-    if (typeof w.hashPin === 'function') return w.hashPin(pin);
-    return Promise.resolve('');
-  },
   enterApp: () => {
     const w = window as unknown as { enterApp?: () => void };
     if (typeof w.enterApp === 'function') w.enterApp();
-  },
-  signOutUser: () => {
-    const w = window as unknown as { signOutUser?: () => void };
-    if (typeof w.signOutUser === 'function') w.signOutUser();
   },
   clearWebAuthnAutoTrigFails: () => {
     const w = window as unknown as { _clearWebAuthnAutoTrigFails?: () => void };
@@ -365,10 +371,66 @@ registerPinHooks({
   },
 });
 
-// Session ↔ PIN cross-wire: session.logoutLocalState() resets the PIN
-// buffer too. We register the reset here so session.ts stays
-// independent of pin.ts at the import-graph level.
-registerPinReset(resetPinBuffer);
+// TS-11 — register the auth-state lifecycle hooks for the side-effects
+// the orchestrator delegates back to inline (realtime tear-down, page
+// reload, profile hydration, post-auth UI flow).
+registerAuthLifecycleHooks({
+  cleanupRealtimeChannels: () => {
+    const w = window as unknown as {
+      _realtimeChannel?: unknown;
+      _activityChannel?: unknown;
+      sb?: { removeChannel?: (ch: unknown) => void };
+    };
+    if (w._realtimeChannel && w.sb?.removeChannel) {
+      try { w.sb.removeChannel(w._realtimeChannel); } catch (_e) { /* no-op */ }
+      w._realtimeChannel = null;
+    }
+    if (w._activityChannel && w.sb?.removeChannel) {
+      try { w.sb.removeChannel(w._activityChannel); } catch (_e) { /* no-op */ }
+      w._activityChannel = null;
+    }
+  },
+  reload: () => {
+    try { location.reload(); } catch (_e) { /* no-op (test env) */ }
+  },
+  loadProfile: async () => {
+    const w = window as unknown as { loadProfileFromCloud?: () => Promise<unknown> };
+    if (typeof w.loadProfileFromCloud === 'function') {
+      return (await w.loadProfileFromCloud()) as ReturnType<typeof getCurrentProfile>;
+    }
+    return null;
+  },
+  postAuthFlow: async () => {
+    const w = window as unknown as { postAuthFlow?: () => Promise<void> | void };
+    if (typeof w.postAuthFlow === 'function') await w.postAuthFlow();
+  },
+  showResetPassword: () => {
+    const w = window as unknown as { showResetPassword?: () => void };
+    if (typeof w.showResetPassword === 'function') w.showResetPassword();
+  },
+});
+
+// TS-11 — when the inline Supabase client (`sb`) initializes, it sets
+// `window.sb`. We poll briefly + then call setSupabaseClient(sb) and
+// attach the auth-state listener. Done as a microtask so it lands AFTER
+// the inline `initSupabase()` finishes its sync setup.
+queueMicrotask(() => {
+  const w = window as unknown as { sb?: unknown };
+  if (w.sb) {
+    setSupabaseClient(w.sb as Parameters<typeof setSupabaseClient>[0]);
+    attachAuthStateListener();
+  } else {
+    // Late init — retry on next macrotask. The inline code creates `sb`
+    // before any UI binding; this fallback handles cold-load timing.
+    setTimeout(() => {
+      const w2 = window as unknown as { sb?: unknown };
+      if (w2.sb) {
+        setSupabaseClient(w2.sb as Parameters<typeof setSupabaseClient>[0]);
+        attachAuthStateListener();
+      }
+    }, 100);
+  }
+});
 
 // Bare-global re-exposure of constants + helpers.
 window.LOCAL_PIN_KEY_PREFIX = LOCAL_PIN_KEY_PREFIX;
@@ -424,3 +486,19 @@ Object.defineProperty(window, '_pinBuffer', {
 // gate inside pinKeyboardHandler IS the historical bug-guard; see pin.ts
 // header comment + SC39 in the harness.
 document.addEventListener('keydown', pinKeyboardHandler);
+
+// TS-11 — expose the typed crypto + orchestrators on window so legacy
+// inline code (signInUser / handleResetPin / etc.) can call them by
+// name. Existing inline `hashPin` / `verifyPin` declarations are removed
+// from index.html below; these assignments are the replacement.
+window.hashPin = hashPin;
+window.verifyPin = verifyPin;
+// Suffixed names so they don't collide with the inline `signInUser` /
+// `signOutUser` that still own the email-lockout layer + UI loading state.
+// Inline `signOutUser` now delegates to `window.signOutUserTS` at its end.
+window.signInUserTS = (email, password) => signInUserOrchestrated(email, password);
+window.signOutUserTS = () => signOutUserOrchestrated();
+window.getSessionTS = getSession;
+// Silence unused-import warnings for accessors we still import but call lazily.
+void signUpWithPassword;
+void supabaseSignOut;

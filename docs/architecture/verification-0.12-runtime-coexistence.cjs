@@ -2067,6 +2067,222 @@ _authExports.setCurrentUser(null);
 _authExports.setCurrentProfile(null);
 try { localStorage.removeItem('degzzy_pin_lock_u1'); } catch (_e) {}
 
+// ===========================================================================
+// TS-11 ASYNC BLOCK — SC42 / SC43 / SC44 need real async/await semantics
+// (Supabase mock returns Promises). CommonJS doesn't support top-level
+// await; wrap the trio in an async IIFE and `process.exit` at the end.
+// ===========================================================================
+(async () => {
+// ===========================================================================
+// SCENARIO 42 — Auth state transition symmetry (TS-11)
+// ===========================================================================
+// Drive the TS auth-state orchestrator through SIGNED_OUT → SIGNED_IN →
+// SIGNED_OUT using a mock Supabase client. Verify:
+//   - listeners attach + detach cleanly
+//   - currentUser/currentProfile mirrors stay coherent across transitions
+//   - logoutLocalState() fires the registered PIN reset (cross-wire intact)
+// ===========================================================================
+console.log('\n=== SCENARIO 42 — auth state transition symmetry (TS-11) ===');
+
+// Build a mock Supabase auth client whose onAuthStateChange callback
+// can be driven manually. signOut is a no-op that returns success.
+let _sc42Callback = null;
+let _sc42Subscribed = false;
+const _sc42MockSb = {
+  auth: {
+    signInWithPassword: async () => ({ data: { user: { id: 'sc42-user', email: 's42@test' }, session: null }, error: null }),
+    signUp: async () => ({ data: { user: null, session: null }, error: null }),
+    signOut: async () => ({ error: null }),
+    getSession: async () => ({ data: { session: null }, error: null }),
+    onAuthStateChange: (cb) => {
+      _sc42Callback = cb;
+      _sc42Subscribed = true;
+      return { data: { subscription: { unsubscribe: () => { _sc42Subscribed = false; _sc42Callback = null; } } } };
+    },
+  },
+};
+
+// Wire the TS orchestrator to the mock + attach listener
+_authExports.setSupabaseClient(_sc42MockSb);
+_authExports._resetSignOutTracking();
+
+// Register lifecycle hooks for SC42 — we observe the calls.
+let _sc42CleanupCalls = 0;
+let _sc42ReloadCalls = 0;
+_authExports.registerAuthLifecycleHooks({
+  cleanupRealtimeChannels: () => { _sc42CleanupCalls += 1; },
+  reload: () => { _sc42ReloadCalls += 1; },
+  loadProfile: async () => ({ name: 'SC42 Profile', role: 'Autre' }),
+  postAuthFlow: async () => { /* no-op */ },
+  showResetPassword: () => { /* no-op */ },
+});
+
+const detachSc42 = _authExports.attachAuthStateListener();
+tr('SC42.a listener attached (subscription owned by mock)', _sc42Subscribed === true);
+
+// Inject a digit so SC42.f can verify the PIN reset side-effect
+_authExports.setCurrentUser({ id: 'sc42-user', email: 's42@test' });
+_authExports.pinKeyPress('4');
+_authExports.pinKeyPress('2');
+tr('SC42.b pre-signOut: user set + pin buffer = "42"', _authExports.getPinBuffer() === '42' && _authExports.getCurrentUser()?.id === 'sc42-user');
+
+// Drive SIGNED_OUT event
+_sc42Callback('SIGNED_OUT', null);
+tr('SC42.c after SIGNED_OUT: currentUser cleared', _authExports.getCurrentUser() === null);
+tr('SC42.d after SIGNED_OUT: currentProfile cleared', _authExports.getCurrentProfile() === null);
+eq('SC42.e cleanupRealtimeChannels invoked', _sc42CleanupCalls, 1);
+// NOTE: the inline `onAuthStateChange` listener used to reset PIN via
+// the inline `_currentUser = null` (no actual PIN buffer reset). The TS
+// SIGNED_OUT handler doesn't auto-reset the PIN — that's deliberately
+// `logoutLocalState`'s job, not the event handler's. The PIN buffer
+// stays — only logoutLocalState() clears it. Verified in SC41 + SC43.
+tr('SC42.f buffer preserved across SIGNED_OUT (logoutLocalState owns reset)', _authExports.getPinBuffer() === '42');
+_authExports.resetPinBuffer(); // explicit cleanup so SC43 starts clean
+
+// Drive SIGNED_IN via signInUserOrchestrated (the real network path)
+const signInResult = await _authExports.signInUserOrchestrated('s42@test', 'pw');
+tr('SC42.g signIn returned ok', signInResult.ok === true);
+tr('SC42.h currentUser is set after signIn', _authExports.getCurrentUser()?.id === 'sc42-user');
+tr('SC42.i currentProfile hydrated via lifecycle hook', _authExports.getCurrentProfile()?.name === 'SC42 Profile');
+
+// Detach + verify clean removal
+detachSc42();
+tr('SC42.j listener detached cleanly', _sc42Subscribed === false);
+
+// Cleanup
+_authExports.setCurrentUser(null);
+_authExports.setCurrentProfile(null);
+_authExports.setSupabaseClient(null);
+
+// ===========================================================================
+// SCENARIO 43 — Concurrent logout guard (TS-11)
+// ===========================================================================
+// Two simultaneous signOutUserOrchestrated() calls. Contract:
+//   - Only ONE Supabase signOut request fires
+//   - Only ONE reload fires
+//   - _signOutInProgress blocks the second from re-entering the sequence
+//   - Both promises resolve when the single sequence completes
+// ===========================================================================
+console.log('\n=== SCENARIO 43 — concurrent logout guard (TS-11) ===');
+
+let _sc43SignOutCalls = 0;
+let _sc43CleanupCalls = 0;
+let _sc43ReloadCalls = 0;
+const _sc43MockSb = {
+  auth: {
+    signInWithPassword: async () => ({ data: { user: null, session: null }, error: null }),
+    signUp: async () => ({ data: { user: null, session: null }, error: null }),
+    signOut: async () => {
+      _sc43SignOutCalls += 1;
+      // Synthetic delay to simulate the network roundtrip
+      await new Promise((r) => setTimeout(r, 10));
+      return { error: null };
+    },
+    getSession: async () => ({ data: { session: null }, error: null }),
+    onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+  },
+};
+_authExports.setSupabaseClient(_sc43MockSb);
+_authExports._resetSignOutTracking();
+_authExports.registerAuthLifecycleHooks({
+  cleanupRealtimeChannels: () => { _sc43CleanupCalls += 1; },
+  reload: () => { _sc43ReloadCalls += 1; },
+});
+
+// Fire two signOut calls in parallel — second must NOT trigger a second
+// signOut request.
+const [p1, p2] = [_authExports.signOutUserOrchestrated(), _authExports.signOutUserOrchestrated()];
+tr('SC43.a _signOutInProgress is true between fire and resolve', _authExports.isSignOutInProgress() === true);
+await Promise.all([p1, p2]);
+
+eq('SC43.b signOut request fired exactly once (guard worked)', _sc43SignOutCalls, 1);
+eq('SC43.c cleanupRealtimeChannels invoked exactly once', _sc43CleanupCalls, 1);
+eq('SC43.d reload invoked exactly once', _sc43ReloadCalls, 1);
+tr('SC43.e _signOutInProgress stays true through reload (set once)', _authExports.isSignOutInProgress() === true);
+
+// Reset guard for SC44
+_authExports._resetSignOutTracking();
+_authExports.setSupabaseClient(null);
+
+// ===========================================================================
+// SCENARIO 44 — Failed auth rollback (TS-11)
+// ===========================================================================
+// Mock signIn that rejects. Verify:
+//   - currentUser stays null (not set provisionally)
+//   - currentProfile stays null
+//   - signInUserOrchestrated reports ok=false with error message
+//   - subsequent successful signIn works normally (state isn't corrupted)
+// ===========================================================================
+console.log('\n=== SCENARIO 44 — failed auth rollback (TS-11) ===');
+
+// Snapshot prior state (should be null after SC43 cleanup)
+const _sc44PreUser = _authExports.getCurrentUser();
+const _sc44PreProfile = _authExports.getCurrentProfile();
+eq('SC44.a clean slate before attempt', { u: _sc44PreUser, p: _sc44PreProfile }, { u: null, p: null });
+
+// Mock client that returns an error on signInWithPassword
+const _sc44MockReject = {
+  auth: {
+    signInWithPassword: async () => ({ data: null, error: { message: 'Invalid login credentials' } }),
+    signUp: async () => ({ data: { user: null, session: null }, error: null }),
+    signOut: async () => ({ error: null }),
+    getSession: async () => ({ data: { session: null }, error: null }),
+    onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+  },
+};
+_authExports.setSupabaseClient(_sc44MockReject);
+
+const r1 = await _authExports.signInUserOrchestrated('bad@test', 'wrong');
+tr('SC44.b signIn returned ok=false', r1.ok === false);
+tr('SC44.c error message propagated', typeof r1.errorMessage === 'string' && r1.errorMessage.includes('Invalid'));
+tr('SC44.d currentUser stays null after reject (no provisional set)', _authExports.getCurrentUser() === null);
+tr('SC44.e currentProfile stays null after reject', _authExports.getCurrentProfile() === null);
+
+// Failed mid-flow — mock signIn succeeds, profile hydration throws
+const _sc44MockMidFail = {
+  auth: {
+    signInWithPassword: async () => ({ data: { user: { id: 'mid-fail', email: 'mid@test' }, session: null }, error: null }),
+    signUp: async () => ({ data: { user: null, session: null }, error: null }),
+    signOut: async () => ({ error: null }),
+    getSession: async () => ({ data: { session: null }, error: null }),
+    onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+  },
+};
+_authExports.setSupabaseClient(_sc44MockMidFail);
+_authExports.registerAuthLifecycleHooks({
+  loadProfile: async () => { throw new Error('Profile hydration failed'); },
+});
+
+const r2 = await _authExports.signInUserOrchestrated('mid@test', 'pw');
+tr('SC44.f signIn returned ok=false after mid-flow throw', r2.ok === false);
+tr('SC44.g currentUser rolled back to null (rollback contract)', _authExports.getCurrentUser() === null);
+tr('SC44.h currentProfile rolled back to null', _authExports.getCurrentProfile() === null);
+
+// Verify state isn't corrupted — a CORRECT signIn after failures works
+_authExports.registerAuthLifecycleHooks({
+  loadProfile: async () => ({ name: 'Recovered', role: 'Autre' }),
+  postAuthFlow: async () => {},
+});
+const _sc44MockOk = {
+  auth: {
+    signInWithPassword: async () => ({ data: { user: { id: 'recovered', email: 'ok@test' }, session: null }, error: null }),
+    signUp: async () => ({ data: { user: null, session: null }, error: null }),
+    signOut: async () => ({ error: null }),
+    getSession: async () => ({ data: { session: null }, error: null }),
+    onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+  },
+};
+_authExports.setSupabaseClient(_sc44MockOk);
+
+const r3 = await _authExports.signInUserOrchestrated('ok@test', 'pw');
+tr('SC44.i subsequent signIn succeeds (no state corruption)', r3.ok === true);
+tr('SC44.j currentUser is set to recovered user', _authExports.getCurrentUser()?.id === 'recovered');
+
+// Cleanup
+_authExports.setCurrentUser(null);
+_authExports.setCurrentProfile(null);
+_authExports.setSupabaseClient(null);
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------
@@ -2074,3 +2290,7 @@ console.log('\n=== SUMMARY ===');
 console.log('Pass: ' + pass + '\nFail: ' + fail);
 console.log('Total dispatch ops (add/remove) logged: ' + dispatchLog.length);
 process.exit(fail === 0 ? 0 : 1);
+})().catch((err) => {
+  console.error('TS-11 async block threw:', err);
+  process.exit(2);
+});

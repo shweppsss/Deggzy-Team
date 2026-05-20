@@ -7687,67 +7687,12 @@ function workspaceKey() {
    v1 format: 'h_<base36 djb2>' kept for verifying legacy hashes.
               When a v1 hash verifies successfully, we upgrade it to v2 inline.
    -------------------------------------------------------------------------- */
-const PIN_HASH_VERSION = 2;
-const PIN_PBKDF2_ITERATIONS = 100000;
-
-function _legacyHashPin(pin) {
-  if (!pin) return '';
-  let h = 5381;
-  for (let i = 0; i < pin.length; i++) h = ((h * 33) ^ pin.charCodeAt(i)) >>> 0;
-  return 'h_' + h.toString(36);
-}
-function _bytesToB64(bytes) {
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-  return btoa(s);
-}
-function _b64ToBytes(b64) {
-  const s = atob(b64);
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
-  return out;
-}
-async function _pbkdf2(pin, saltBytes) {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw', enc.encode(pin), { name: 'PBKDF2' }, false, ['deriveBits']
-  );
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt: saltBytes, iterations: PIN_PBKDF2_ITERATIONS, hash: 'SHA-256' },
-    keyMaterial, 256
-  );
-  return new Uint8Array(bits);
-}
-async function hashPin(pin) {
-  if (!pin) return '';
-  const saltBytes = crypto.getRandomValues(new Uint8Array(16));
-  const hashBytes = await _pbkdf2(pin, saltBytes);
-  return JSON.stringify({
-    v: PIN_HASH_VERSION,
-    salt: _bytesToB64(saltBytes),
-    hash: _bytesToB64(hashBytes),
-  });
-}
-async function verifyPin(pin, stored) {
-  if (!stored || !pin) return false;
-  // Legacy djb2 format
-  if (stored.startsWith('h_')) {
-    return _legacyHashPin(pin) === stored;
-  }
-  // v2 PBKDF2 format
-  try {
-    const parsed = JSON.parse(stored);
-    if (!parsed || parsed.v !== PIN_HASH_VERSION || !parsed.salt || !parsed.hash) return false;
-    const saltBytes = _b64ToBytes(parsed.salt);
-    const challenge = await _pbkdf2(pin, saltBytes);
-    const expected = _b64ToBytes(parsed.hash);
-    if (challenge.length !== expected.length) return false;
-    // Constant-time compare — avoid timing side-channel on the 256-bit hash
-    let diff = 0;
-    for (let i = 0; i < challenge.length; i++) diff |= challenge[i] ^ expected[i];
-    return diff === 0;
-  } catch (e) { return false; }
-}
+// PIN crypto (hashPin / verifyPin + PBKDF2 helpers + legacy djb2) —
+// EXTRACTED in Phase TS-11 to /src/features/auth/crypto.ts. Re-attached
+// on window via /src/main.ts. PIN_HASH_VERSION + PIN_PBKDF2_ITERATIONS
+// constants live in /src/features/auth/crypto.ts now (private to the
+// module — they no longer need to be on window because nothing inline
+// references them by name).
 
 // WEAK_PINS + isWeakPin + PIN_LOCKOUT_THRESHOLDS + getPinLockState +
 // recordPinFailure + clearPinFailures — EXTRACTED in Phase TS-10 to
@@ -8317,30 +8262,13 @@ function initSupabase() {
       },
       realtime: { params: { eventsPerSecond: 8 } },
     });
-    // React to Supabase auth lifecycle events. PASSWORD_RECOVERY shows the
-    // reset view; SIGNED_OUT means the session ended (server-side revoke,
-    // password change elsewhere, manual signOut on another device) — we
-    // tear down the realtime channel and reload so checkAuth re-routes to
-    // the sign-in screen. TOKEN_REFRESHED is just logged for visibility.
-    sb.auth.onAuthStateChange((event, session) => {
-      console.log('[Auth] event:', event);
-      if (event === 'PASSWORD_RECOVERY') {
-        _currentUser = session ? session.user : null;
-        showResetPassword();
-        return;
-      }
-      if (event === 'SIGNED_OUT') {
-        _currentUser = null;
-        _currentProfile = null;
-        if (_realtimeChannel) {
-          try { sb.removeChannel(_realtimeChannel); } catch (e) {}
-          _realtimeChannel = null;
-        }
-        // Skip the reload if we initiated the signOut ourselves — signOutUser
-        // already reloads, and a double-reload race can cancel the first one.
-        if (!_signOutInProgress) location.reload();
-      }
-    });
+    // Auth lifecycle events — EXTRACTED in Phase TS-11 to
+    // /src/features/auth/auth-state.ts. /src/main.ts attaches the typed
+    // listener via `attachAuthStateListener()` once the inline Supabase
+    // client (`sb`) is created. The TS listener handles PASSWORD_RECOVERY
+    // / SIGNED_OUT / cleanup with the SAME logic as before, but routed
+    // through registerAuthLifecycleHooks (cleanupRealtimeChannels +
+    // reload + showResetPassword) so each side-effect is testable.
     return true;
   } catch (e) {
     console.error('Supabase init failed:', e);
@@ -9972,11 +9900,22 @@ function resetLocalPin() {
   signOutUser();
 }
 
+// signOutUser — DELEGATED in Phase TS-11 to the TS orchestrator
+// (/src/features/auth/auth-state.ts → signOutUserOrchestrated). The
+// inline thin shim keeps the legacy call-site name unchanged. The
+// orchestrator now owns concurrency-guard (SC43), realtime tear-down
+// (via registerAuthLifecycleHooks), local cleanup (logoutLocalState),
+// and the reload (via the reload hook). A second concurrent call
+// returns the same promise — no double signOut, no double reload.
 async function signOutUser() {
-  _signOutInProgress = true;
-  if (sb) {
-    try { await sb.auth.signOut(); } catch (e) {}
+  // window.signOutUserTS is wired by /src/main.ts → signOutUserOrchestrated.
+  if (typeof window.signOutUserTS === 'function') {
+    return window.signOutUserTS();
   }
+  // Fallback for the (impossible in production) case where the deferred
+  // module hasn't run yet — preserve the previous behavior verbatim.
+  _signOutInProgress = true;
+  if (sb) { try { await sb.auth.signOut(); } catch (e) {} }
   if (_realtimeChannel) { try { sb.removeChannel(_realtimeChannel); } catch (e) {} _realtimeChannel = null; }
   if (_activityChannel) { try { sb.removeChannel(_activityChannel); } catch (e) {} _activityChannel = null; }
   _currentUser = null;

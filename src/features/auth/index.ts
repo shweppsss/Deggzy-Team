@@ -58,3 +58,29 @@ export {
 import { registerPinReset } from './session';
 import { resetPinBuffer as _resetPinBufferImpl } from './pin';
 registerPinReset(_resetPinBufferImpl);
+
+// TS-11 — new surfaces.
+export { hashPin, verifyPin, legacyHashPin } from './crypto';
+
+export type { AuthSession, AuthEvent, AuthStateCallback } from './supabase-auth';
+export {
+  setSupabaseClient,
+  getSupabaseClient,
+  hasSupabaseClient,
+  signInWithPassword,
+  signUpWithPassword,
+  supabaseSignOut,
+  getSession,
+  onAuthStateChange,
+} from './supabase-auth';
+
+export type { AuthLifecycleHooks, SignInResult } from './auth-state';
+export {
+  registerAuthLifecycleHooks,
+  signOutUserOrchestrated,
+  signInUserOrchestrated,
+  attachAuthStateListener,
+  _resetSignOutTracking,
+} from './auth-state';
+
+export { wireAuthHooks } from './hooks';
