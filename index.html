@@ -12624,38 +12624,17 @@ function deleteEvent() {
 /* ============================
    ASSETS
    ============================ */
+// renderAssets / renderAssetGrid / assetTileHTML — EXTRACTED in Phase
+// TS-14C to /src/render/assets/. Inline `renderAssetGrid(cat)` is now a
+// thin shim that re-renders THE WHOLE assets section through the TS
+// pipeline (it's cheap — 4 categories × small lists).
 function renderAssets() {
-  ['DA','Photos','Tiktok','BTS'].forEach(cat => renderAssetGrid(cat));
+  if (typeof window.renderAssetsTS === 'function') return window.renderAssetsTS();
 }
-
-function renderAssetGrid(cat) {
-  const container = document.getElementById('assets' + cat);
-  const items = state.assets[cat] || [];
-  let html = items.map((item, i) => assetTileHTML(cat, i, item)).join('');
-  html += `
-    <label class="asset-tile asset-tile-add">
-      + Ajouter
-      <input type="file" accept="image/*,video/*" multiple onchange="handleAssetUpload('${cat}', event)" />
-    </label>
-  `;
-  container.innerHTML = html;
-}
-
-function assetTileHTML(cat, i, item) {
-  const isVideo = item.type && item.type.startsWith('video');
-  if (isVideo) {
-    return `
-      <div class="asset-tile">
-        <video src="${item.data}" controls></video>
-        <button class="del" onclick="deleteAsset('${cat}', ${i})" aria-label="Supprimer l'asset" type="button">×</button>
-      </div>
-    `;
-  }
-  return `
-    <div class="asset-tile" style="background-image: url('${item.data}')">
-      <button class="del" onclick="deleteAsset('${cat}', ${i})">×</button>
-    </div>
-  `;
+function renderAssetGrid(_cat) {
+  // Granular per-category re-render now collapses to a full assets render.
+  // The TS pipeline rebuilds all 4 categories' grids in one pass.
+  if (typeof window.renderAssetsTS === 'function') return window.renderAssetsTS();
 }
 
 async function handleAssetUpload(cat, ev) {
@@ -14171,48 +14150,15 @@ function renderInspirations() {
   if (typeof window.renderInspirationsTS === 'function') return window.renderInspirationsTS();
 }
 
-/* CLIPS + CAPSULES — shared render/upload/delete handlers. Both sections work
-   the same way: drop a video file → IDB-save → fire-and-forget SB upload →
-   masonry card with hover-autoplay video preview. */
+// renderVideoSection / renderClips / renderCapsules / videoCardHTML —
+// EXTRACTED in Phase TS-14C to /src/render/clips/ (shared module used
+// by both clips AND capsules). Inline shims forward to the TS pipeline.
 function renderVideoSection(section) {
-  const cfg = VIDEO_SECTIONS[section];
-  const grid = document.getElementById(cfg.gridId);
-  if (!grid) return;
-  const list = Array.isArray(state[cfg.stateKey]) ? state[cfg.stateKey] : [];
-  if (list.length === 0) {
-    grid.innerHTML = emptyState('inspirations', section === 'clips' ? 'Aucun clip pour l\'instant' : 'Aucune capsule pour l\'instant',
-      section === 'clips' ? 'Drop tes teasers, TikTok, snippets ici.' : 'Drop tes interviews, BTS, lives ici.',
-      'Ajouter un ' + cfg.label, `document.getElementById('${section === 'clips' ? 'clipUpload' : 'capsuleUpload'}').click()`);
-    return;
-  }
-  const sorted = list.slice().sort((a, b) => (b.addedAt || '').localeCompare(a.addedAt || ''));
-  grid.innerHTML = sorted.map(item => videoCardHTML(section, item)).join('');
-  hydrateVideoSection(section);
+  if (section === 'clips' && typeof window.renderClipsTS === 'function') return window.renderClipsTS();
+  if (section === 'capsules' && typeof window.renderCapsulesTS === 'function') return window.renderCapsulesTS();
 }
 function renderClips() { renderVideoSection('clips'); }
 function renderCapsules() { renderVideoSection('capsules'); }
-
-function videoCardHTML(section, item) {
-  const title = escapeHtml(item.title || 'Sans titre');
-  const safeId = escapeHtml(item.id);
-  const dateLabel = item.addedAt ? new Date(item.addedAt).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' }) : '';
-  return `
-    <article class="inspi-card-v2" data-id="${safeId}" data-kind="${section}" data-media="video" tabindex="0" aria-label="${title}">
-      <div class="inspi-card-media">
-        <video data-hydrate-video="${section}:${safeId}" muted playsinline loop preload="metadata"
-               onmouseenter="this.play()" onmouseleave="this.pause()"></video>
-        <div class="inspi-card-video-badge">${icon('play', 12)}</div>
-      </div>
-      <div class="inspi-card-foot">
-        <div class="inspi-card-title">${title}</div>
-        <div class="inspi-card-meta">
-          <span class="inspi-card-badge">${dateLabel}</span>
-          <button class="btn btn-sm" onclick="event.stopPropagation(); deleteVideo('${section}', '${safeId}')" aria-label="Supprimer" style="margin-left:auto;">×</button>
-        </div>
-      </div>
-    </article>
-  `;
-}
 
 async function hydrateVideoSection(section) {
   const els = document.querySelectorAll(`[data-hydrate-video^="${section}:"]`);

@@ -167,6 +167,13 @@ import {
   type InspiDeps as _InspiDeps,
 } from './render/inspirations';
 import { TODO_CATEGORIES as _TODO_CATS } from './features/detail/domain';
+// TS-14C — assets + clips/capsules render modules.
+import { renderAssetsView } from './render/assets';
+import {
+  renderVideoSectionView,
+  registerVideoSectionSideEffects,
+  type VideoDeps as _VideoDeps,
+} from './render/clips';
 import {
   // session
   getCurrentUser,
@@ -843,6 +850,10 @@ registerSectionRenderer(DASHBOARD_SECTION, () => {
 (window as unknown as { renderInspirationsTS?: () => void }).renderInspirationsTS = () => {
   renderInspirationsView(_buildInspiDeps());
 };
+// TS-14C — assets + clips/capsules shims.
+(window as unknown as { renderAssetsTS?: () => void }).renderAssetsTS = () => renderAssetsView();
+(window as unknown as { renderClipsTS?: () => void }).renderClipsTS = () => renderVideoSectionView('clips', _buildVideoDeps());
+(window as unknown as { renderCapsulesTS?: () => void }).renderCapsulesTS = () => renderVideoSectionView('capsules', _buildVideoDeps());
 registerSectionRenderer('profile',             callInlineRender('renderProfile'));
 // TS-14B — todos use the TS render pipeline.
 function _buildTodoDeps(): _TodoDeps {
@@ -957,9 +968,27 @@ registerInspirationsSideEffects({
 registerSectionRenderer(INSPIRATIONS_SECTION, () => {
   renderInspirationsView(_buildInspiDeps());
 });
-registerSectionRenderer('clips',               callInlineRender('renderClips'));
-registerSectionRenderer('capsules',            callInlineRender('renderCapsules'));
-registerSectionRenderer('assets',              callInlineRender('renderAssets'));
+// TS-14C — clips + capsules share the same TS render path.
+function _buildVideoDeps(): _VideoDeps {
+  return {
+    escapeHtml: (s: string | null | undefined) => escapeHtml(s),
+    icon: (name: string, size?: number, extra?: string) => icon(name, size, extra),
+    emptyState: (kind: string, title: string, hint?: string, ctaLabel?: string, ctaOnclick?: string) =>
+      emptyState(kind, title, hint, ctaLabel, ctaOnclick),
+  };
+}
+registerVideoSectionSideEffects({
+  hydrateVideoSection: async (kind) => {
+    const w = window as unknown as { hydrateVideoSection?: (k: string) => Promise<void> | void };
+    if (typeof w.hydrateVideoSection === 'function') {
+      try { await w.hydrateVideoSection(kind); } catch (_e) { /* no-op */ }
+    }
+  },
+});
+registerSectionRenderer('clips',    () => { renderVideoSectionView('clips',    _buildVideoDeps()); });
+registerSectionRenderer('capsules', () => { renderVideoSectionView('capsules', _buildVideoDeps()); });
+// TS-14C — assets use the TS render path.
+registerSectionRenderer('assets',   () => { renderAssetsView(); });
 registerSectionRenderer(TEAM_SECTION,          callInlineRender('renderTeam'));
 registerSectionRenderer('budget',              callInlineRender('renderBudget'));
 registerSectionRenderer('plan',                callInlineRender('renderPlan'));

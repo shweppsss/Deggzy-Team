@@ -3098,6 +3098,129 @@ const _sc66NormB = _inspiR.normalizeInspi(_inspiFixture[0], _inspiDepsStub);
 eq('SC66.b normalizeInspi is deterministic', _sc66NormA, _sc66NormB);
 eq('SC66.c normalizeInspi does NOT mutate input', JSON.stringify(_inspiFixture[0]), JSON.stringify({ id: 'i1', title: 'First', category: 'Mood', addedAt: '2026-05-01T10:00', mediaType: 'image', mediaUrl: 'http://x/1.png' }));
 
+// ===========================================================================
+// TS-14C — ASSETS + CLIPS/CAPSULES SCENARIOS (SC67..SC72)
+// ===========================================================================
+const assetsBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', 'assets', 'index.ts')],
+  bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+  write: false, logLevel: 'silent',
+});
+const _assetsMod = { exports: {} };
+(function (module, exports, require) { eval(assetsBundle.outputFiles[0].text); })(_assetsMod, _assetsMod.exports, require);
+const _assetsR = _assetsMod.exports;
+
+const clipsBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', 'clips', 'index.ts')],
+  bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+  write: false, logLevel: 'silent',
+});
+const _clipsMod = { exports: {} };
+(function (module, exports, require) { eval(clipsBundle.outputFiles[0].text); })(_clipsMod, _clipsMod.exports, require);
+const _clipsR = _clipsMod.exports;
+
+const _videoDepsStub = {
+  escapeHtml: (s) => String(s == null ? '' : s),
+  icon: () => '',
+  emptyState: (kind, title) => `<div class="empty">${title}</div>`,
+};
+
+// ===========================================================================
+// SCENARIO 67 — Assets rerender idempotence (TS-14C)
+// ===========================================================================
+console.log('\n=== SCENARIO 67 — assets rerender idempotence (TS-14C) ===');
+const _sc67Model = {
+  byCategory: {
+    DA: [{ name: 'a.png', type: 'image/png', data: 'a' }],
+    Photos: [{ name: 'p.mp4', type: 'video/mp4', data: 'p' }],
+    Tiktok: [],
+    BTS: [],
+  },
+  categories: ['DA', 'Photos', 'Tiktok', 'BTS'],
+};
+const _sc67First = _assetsR.buildAssetsView(_sc67Model);
+let _sc67Same = true;
+for (let i = 0; i < 100; i++) {
+  if (JSON.stringify(_assetsR.buildAssetsView(_sc67Model)) !== JSON.stringify(_sc67First)) {
+    _sc67Same = false; break;
+  }
+}
+tr('SC67.a 100 assets renders → identical', _sc67Same);
+eq('SC67.b 4 grids produced', _sc67First.grids.length, 4);
+// Each grid ends with the "+ Ajouter" tile
+tr('SC67.c every grid contains the add tile', _sc67First.grids.every(g => g.html.includes('asset-tile-add')));
+
+// ===========================================================================
+// SCENARIO 68 — Assets video vs image tile (TS-14C)
+// ===========================================================================
+console.log('\n=== SCENARIO 68 — assets video vs image tile (TS-14C) ===');
+tr('SC68.a image type detected as non-video', _assetsR.isVideoAsset({ type: 'image/png' }) === false);
+tr('SC68.b video type detected as video', _assetsR.isVideoAsset({ type: 'video/mp4' }) === true);
+const _sc68Image = _assetsR.buildAssetTile('DA', 0, { type: 'image/png', data: 'A' });
+const _sc68Video = _assetsR.buildAssetTile('Photos', 0, { type: 'video/mp4', data: 'V' });
+tr('SC68.c image tile renders background-image', _sc68Image.includes("background-image: url('A')"));
+tr('SC68.d video tile renders <video> with controls', _sc68Video.includes('<video') && _sc68Video.includes('controls'));
+
+// ===========================================================================
+// SCENARIO 69 — Clips/capsules rerender idempotence (TS-14C)
+// ===========================================================================
+console.log('\n=== SCENARIO 69 — clips/capsules rerender idempotence (TS-14C) ===');
+const _sc69Clips = {
+  kind: 'clips',
+  items: [
+    { id: 'c1', title: 'First clip', addedAt: '2026-05-01' },
+    { id: 'c2', title: 'Latest', addedAt: '2026-05-10' },
+  ],
+};
+const _sc69First = _clipsR.buildVideoSectionView(_sc69Clips, _videoDepsStub);
+let _sc69Same = true;
+for (let i = 0; i < 100; i++) {
+  if (JSON.stringify(_clipsR.buildVideoSectionView(_sc69Clips, _videoDepsStub)) !== JSON.stringify(_sc69First)) {
+    _sc69Same = false; break;
+  }
+}
+tr('SC69.a 100 clips renders → identical', _sc69Same);
+eq('SC69.b 2 cards in output', (_sc69First.gridHtml.match(/<article/g) || []).length, 2);
+// Newest first
+const _sc69FirstCardId = (_sc69First.gridHtml.match(/data-id="([^"]+)"/) || [])[1];
+eq('SC69.c first card is the newest (c2)', _sc69FirstCardId, 'c2');
+
+// ===========================================================================
+// SCENARIO 70 — Capsules same code path as clips (kind discriminator only)
+// ===========================================================================
+console.log('\n=== SCENARIO 70 — capsules use same code path as clips (TS-14C) ===');
+const _sc70Capsules = { kind: 'capsules', items: _sc69Clips.items };
+const _sc70Result = _clipsR.buildVideoSectionView(_sc70Capsules, _videoDepsStub);
+// Card structure identical, only the data-kind attribute differs.
+tr('SC70.a capsules cards include data-kind="capsules"', _sc70Result.gridHtml.includes('data-kind="capsules"'));
+tr('SC70.b clips cards include data-kind="clips"', _sc69First.gridHtml.includes('data-kind="clips"'));
+const _sc70Renamed = _sc70Result.gridHtml.replace(/data-kind="capsules"/g, 'data-kind="clips"').replace(/deleteVideo\('capsules'/g, "deleteVideo('clips'").replace(/hydrate-video="capsules:/g, 'hydrate-video="clips:');
+eq('SC70.c only kind discriminator differs (no other divergence)', _sc70Renamed, _sc69First.gridHtml);
+
+// ===========================================================================
+// SCENARIO 71 — Empty-state stability for both video sections (TS-14C)
+// ===========================================================================
+console.log('\n=== SCENARIO 71 — empty-state stability video sections (TS-14C) ===');
+const _sc71EmptyClips = _clipsR.buildVideoSectionView({ kind: 'clips', items: [] }, _videoDepsStub);
+const _sc71EmptyCapsules = _clipsR.buildVideoSectionView({ kind: 'capsules', items: [] }, _videoDepsStub);
+tr('SC71.a clips empty → empty=true', _sc71EmptyClips.empty === true);
+tr('SC71.b capsules empty → empty=true', _sc71EmptyCapsules.empty === true);
+tr('SC71.c clips empty includes "clip"', _sc71EmptyClips.emptyHtml.toLowerCase().includes('clip'));
+tr('SC71.d capsules empty includes "capsule"', _sc71EmptyCapsules.emptyHtml.toLowerCase().includes('capsule'));
+
+// ===========================================================================
+// SCENARIO 72 — Input mutation rollback (TS-14C, both sections)
+// ===========================================================================
+console.log('\n=== SCENARIO 72 — input mutation rollback (TS-14C) ===');
+const _sc72AssetsSnap = JSON.stringify(_sc67Model);
+const _sc72VideoSnap = JSON.stringify(_sc69Clips);
+for (let i = 0; i < 10; i++) {
+  _assetsR.buildAssetsView(_sc67Model);
+  _clipsR.buildVideoSectionView(_sc69Clips, _videoDepsStub);
+}
+eq('SC72.a assets model not mutated by 10 renders', JSON.stringify(_sc67Model), _sc72AssetsSnap);
+eq('SC72.b clips model not mutated by 10 renders', JSON.stringify(_sc69Clips), _sc72VideoSnap);
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------
