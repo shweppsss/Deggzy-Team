@@ -30,4 +30,5 @@ export const TODOS_SECTION = 'todos' as const;
 // SECTION_ID constant is co-located inside ./calendar/index.ts.
 export const CALENDAR_SECTION = 'calendar' as const;
 export const INSPIRATIONS_SECTION = 'inspirations' as const;
-export { TEAM_SECTION } from './members';
+// TS-14D — team renderer is now a sub-module with its own render.
+export const TEAM_SECTION = 'team' as const;

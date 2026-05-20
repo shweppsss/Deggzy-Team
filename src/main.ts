@@ -174,6 +174,13 @@ import {
   registerVideoSectionSideEffects,
   type VideoDeps as _VideoDeps,
 } from './render/clips';
+// TS-14D — team render module + capsules barrel (alias for clips module).
+import {
+  renderTeamView,
+  registerTeamSideEffects,
+  type TeamDeps as _TeamDeps,
+} from './render/team';
+import { renderCapsulesView } from './render/capsules';
 import {
   // session
   getCurrentUser,
@@ -854,6 +861,9 @@ registerSectionRenderer(DASHBOARD_SECTION, () => {
 (window as unknown as { renderAssetsTS?: () => void }).renderAssetsTS = () => renderAssetsView();
 (window as unknown as { renderClipsTS?: () => void }).renderClipsTS = () => renderVideoSectionView('clips', _buildVideoDeps());
 (window as unknown as { renderCapsulesTS?: () => void }).renderCapsulesTS = () => renderVideoSectionView('capsules', _buildVideoDeps());
+// TS-14D — team shim + capsules through the new alias.
+(window as unknown as { renderTeamTS?: () => void }).renderTeamTS = () => renderTeamView(_buildTeamDeps());
+void renderCapsulesView; // alias re-exported for symmetry; same code path as window.renderCapsulesTS above.
 registerSectionRenderer('profile',             callInlineRender('renderProfile'));
 // TS-14B — todos use the TS render pipeline.
 function _buildTodoDeps(): _TodoDeps {
@@ -989,7 +999,26 @@ registerSectionRenderer('clips',    () => { renderVideoSectionView('clips',    _
 registerSectionRenderer('capsules', () => { renderVideoSectionView('capsules', _buildVideoDeps()); });
 // TS-14C — assets use the TS render path.
 registerSectionRenderer('assets',   () => { renderAssetsView(); });
-registerSectionRenderer(TEAM_SECTION,          callInlineRender('renderTeam'));
+// TS-14D — team uses the TS render path.
+function _buildTeamDeps(): _TeamDeps {
+  return {
+    escapeHtml: (s: string | null | undefined) => escapeHtml(s),
+    icon: (name: string, size?: number, extra?: string) => icon(name, size, extra),
+    emptyState: (kind: string, title: string, hint?: string, ctaLabel?: string, ctaOnclick?: string) =>
+      emptyState(kind, title, hint, ctaLabel, ctaOnclick),
+  };
+}
+registerTeamSideEffects({
+  attachSwipeDelete: (el: HTMLElement, onDelete: () => void) => {
+    const w = window as unknown as { attachSwipeDelete?: (el: HTMLElement, fn: () => void) => void };
+    if (typeof w.attachSwipeDelete === 'function') w.attachSwipeDelete(el, onDelete);
+  },
+  swipeDeleteMember: (id: string) => {
+    const w = window as unknown as { swipeDeleteMember?: (id: string) => void };
+    if (typeof w.swipeDeleteMember === 'function') w.swipeDeleteMember(id);
+  },
+});
+registerSectionRenderer(TEAM_SECTION, () => { renderTeamView(_buildTeamDeps()); });
 registerSectionRenderer('budget',              callInlineRender('renderBudget'));
 registerSectionRenderer('plan',                callInlineRender('renderPlan'));
 registerSectionRenderer('kpi',                 callInlineRender('renderKPI'));

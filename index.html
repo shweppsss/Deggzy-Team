@@ -12661,52 +12661,9 @@ function deleteAsset(cat, i) {
 /* ============================
    TEAM
    ============================ */
+// renderTeam — EXTRACTED in Phase TS-14D to /src/render/team/.
 function renderTeam() {
-  const g = document.getElementById('teamGrid');
-  const team = Array.isArray(state.team) ? state.team : [];
-  if (team.length === 0) {
-    g.innerHTML = emptyState('team', 'Aucun membre pour l\'instant', 'Ajoute le premier rôle de ton équipe pour démarrer la collaboration.', 'Ajouter un membre', 'addMember()');
-    return;
-  }
-  // Compute initials from name, fallback on role first letter
-  const getInitial = (m) => {
-    const name = (m && m.name || '').trim();
-    if (!name || name.startsWith('—')) return ((m && m.role) || '?').charAt(0).toUpperCase();
-    const parts = name.split(/\s+/).filter(Boolean);
-    return (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
-  };
-  g.innerHTML = `
-    <div class="list-section">
-      <div class="list-section-head">Équipe <span class="count">${team.length}</span></div>
-      <div class="list-section-body">
-        ${team.map(m => {
-          if (!m || !m.id) return '';
-          const isPending = (m.name || '').trim().startsWith('—') || !m.name;
-          const subBits = [];
-          if (m.role) subBits.push(escapeHtml(m.role));
-          if (m.note) subBits.push(escapeHtml(m.note));
-          return `
-            <button type="button" class="list-row" data-id="${m.id}" data-kind="member" data-action="open" aria-label="${escapeHtml(m.name || m.role || 'Membre')}">
-              <span class="list-row-lead"${isPending ? ' style="opacity:0.45"' : ''}>${getInitial(m)}</span>
-              <span class="list-row-body">
-                <span class="list-row-title">${escapeHtml(m.name || '—')}</span>
-                <span class="list-row-sub">${subBits.join('<span class="sep">·</span>')}</span>
-              </span>
-              <span class="list-row-trail">
-                ${isPending ? '<span class="list-row-badge">À pourvoir</span>' : ''}
-                <span class="list-row-chev" aria-hidden="true">${icon('chevron', 14)}</span>
-              </span>
-            </button>
-          `;
-        }).join('')}
-      </div>
-    </div>
-  `;
-  // Swipe-to-delete
-  g.querySelectorAll('.list-row[data-id]').forEach(el => {
-    const id = el.dataset.id;
-    if (id) attachSwipeDelete(el, () => swipeDeleteMember(id));
-  });
+  if (typeof window.renderTeamTS === 'function') return window.renderTeamTS();
 }
 
 function addMember() {

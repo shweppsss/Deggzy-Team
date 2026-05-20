@@ -3221,6 +3221,103 @@ for (let i = 0; i < 10; i++) {
 eq('SC72.a assets model not mutated by 10 renders', JSON.stringify(_sc67Model), _sc72AssetsSnap);
 eq('SC72.b clips model not mutated by 10 renders', JSON.stringify(_sc69Clips), _sc72VideoSnap);
 
+// ===========================================================================
+// TS-14D — TEAM + CAPSULES (alias) SCENARIOS (SC73..SC77)
+// ===========================================================================
+const teamBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', 'team', 'index.ts')],
+  bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+  write: false, logLevel: 'silent',
+});
+const _teamMod = { exports: {} };
+(function (module, exports, require) { eval(teamBundle.outputFiles[0].text); })(_teamMod, _teamMod.exports, require);
+const _teamR = _teamMod.exports;
+
+const capsulesBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', 'capsules', 'index.ts')],
+  bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+  write: false, logLevel: 'silent',
+});
+const _capsulesMod = { exports: {} };
+(function (module, exports, require) { eval(capsulesBundle.outputFiles[0].text); })(_capsulesMod, _capsulesMod.exports, require);
+const _capsulesR = _capsulesMod.exports;
+
+const _teamDepsStub = {
+  escapeHtml: (s) => String(s == null ? '' : s),
+  icon: () => '',
+  emptyState: (kind, title) => `<div class="empty">${title}</div>`,
+};
+
+// ===========================================================================
+// SCENARIO 73 — Team rerender idempotence (TS-14D)
+// ===========================================================================
+console.log('\n=== SCENARIO 73 — team rerender idempotence (TS-14D) ===');
+const _sc73Model = {
+  members: [
+    { id: 'm1', name: 'Alice Martin', role: 'Manager', note: 'Coordination' },
+    { id: 'm2', name: '— À recruter', role: 'Designer' }, // pending
+    { id: 'm3', name: 'Bob', role: 'Ingé son' },
+  ],
+};
+const _sc73First = _teamR.buildTeamView(_sc73Model, _teamDepsStub);
+let _sc73Same = true;
+for (let i = 0; i < 100; i++) {
+  if (JSON.stringify(_teamR.buildTeamView(_sc73Model, _teamDepsStub)) !== JSON.stringify(_sc73First)) {
+    _sc73Same = false; break;
+  }
+}
+tr('SC73.a 100 team renders → identical', _sc73Same);
+eq('SC73.b 3 member rows in output', (_sc73First.listHtml.match(/data-kind="member"/g) || []).length, 3);
+tr('SC73.c "À pourvoir" badge appears for pending member', _sc73First.listHtml.includes('À pourvoir'));
+
+// ===========================================================================
+// SCENARIO 74 — Team initials + pending detection (TS-14D)
+// ===========================================================================
+console.log('\n=== SCENARIO 74 — team initials + pending (TS-14D) ===');
+eq('SC74.a "Alice Martin" → "AM"', _teamR.memberInitials({ name: 'Alice Martin' }), 'AM');
+eq('SC74.b "Bob" → "B"', _teamR.memberInitials({ name: 'Bob' }), 'B');
+eq('SC74.c pending (— prefix) → role initial', _teamR.memberInitials({ name: '— X', role: 'Designer' }), 'D');
+eq('SC74.d no name → role initial', _teamR.memberInitials({ role: 'Producer' }), 'P');
+tr('SC74.e empty name → pending', _teamR.isPendingMember({ role: 'X' }));
+tr('SC74.f "— Alice" → pending', _teamR.isPendingMember({ name: '— Alice' }));
+tr('SC74.g "Alice" → NOT pending', _teamR.isPendingMember({ name: 'Alice' }) === false);
+
+// ===========================================================================
+// SCENARIO 75 — Team empty-state stability (TS-14D)
+// ===========================================================================
+console.log('\n=== SCENARIO 75 — team empty-state stability (TS-14D) ===');
+const _sc75Empty = _teamR.buildTeamView({ members: [] }, _teamDepsStub);
+tr('SC75.a empty team → empty=true', _sc75Empty.empty === true);
+let _sc75Stable = true;
+for (let i = 0; i < 50; i++) {
+  if (JSON.stringify(_teamR.buildTeamView({ members: [] }, _teamDepsStub)) !== JSON.stringify(_sc75Empty)) {
+    _sc75Stable = false; break;
+  }
+}
+tr('SC75.b 50 reruns on empty team → stable', _sc75Stable);
+
+// ===========================================================================
+// SCENARIO 76 — Team input mutation rollback (TS-14D)
+// ===========================================================================
+console.log('\n=== SCENARIO 76 — team input mutation rollback (TS-14D) ===');
+const _sc76Snap = JSON.stringify(_sc73Model);
+for (let i = 0; i < 10; i++) {
+  _teamR.buildTeamView(_sc73Model, _teamDepsStub);
+}
+eq('SC76.a 10 team renders did NOT mutate input', JSON.stringify(_sc73Model), _sc76Snap);
+
+// ===========================================================================
+// SCENARIO 77 — Capsules alias produces identical HTML to clips path
+// ===========================================================================
+console.log('\n=== SCENARIO 77 — capsules alias parity (TS-14D) ===');
+const _sc77Items = [
+  { id: 'cap1', title: 'Interview', addedAt: '2026-05-10' },
+];
+const _sc77ViaClips = _clipsR.buildVideoSectionView({ kind: 'capsules', items: _sc77Items }, _videoDepsStub);
+const _sc77ViaCapsules = _capsulesR.buildCapsulesView({ items: _sc77Items }, _videoDepsStub);
+eq('SC77.a capsules barrel produces same HTML as clips shared module', _sc77ViaCapsules, _sc77ViaClips);
+eq('SC77.b CAPSULES_SECTION constant === "capsules"', _capsulesR.CAPSULES_SECTION, 'capsules');
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------
