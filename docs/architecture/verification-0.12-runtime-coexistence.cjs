@@ -3913,8 +3913,308 @@ await (async () => {
   tr('SC99.b no unhandled throw during resolution', true);
 })();
 
+// ===========================================================================
+// TS-19 — MINI-PLAYER ORCHESTRATION SCENARIOS (SC100..SC106)
+// ===========================================================================
+//
+// The player module exposes a token-protected controller over a single
+// HTMLAudioElement. The harness mocks audio.play() as a Promise so we can
+// verify race-safety (no zombie playback, last-intent-wins), and tracks
+// listener counts across cycles to detect leaks.
 // ---------------------------------------------------------------------------
-// SUMMARY — runs AFTER the TS-18 await block above completes.
+const _playerR = _bundleFeatureDir('audio/player');
+
+// --- Mock HTMLAudioElement ------------------------------------------------
+// Tracks: src changes, play() invocations, listener counts, currentTime.
+function _makeMockAudio() {
+  const listeners = {};
+  let _src = '';
+  let _paused = true;
+  let _ct = 0;
+  let _dur = 100;
+  let _playCount = 0;
+  const a = {
+    get src() { return _src; },
+    set src(v) { _src = v; },
+    get paused() { return _paused; },
+    get currentTime() { return _ct; },
+    set currentTime(v) { _ct = v; (listeners['seeking'] || []).forEach((fn) => fn()); },
+    get duration() { return _dur; },
+    set duration(v) { _dur = v; },
+    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    removeEventListener(type, fn) {
+      const arr = listeners[type] || [];
+      const idx = arr.indexOf(fn);
+      if (idx >= 0) arr.splice(idx, 1);
+    },
+    play() {
+      _playCount++;
+      _paused = false;
+      // Fire 'play' listener
+      const playFns = listeners['play'] || [];
+      queueMicrotask(() => playFns.forEach((fn) => fn()));
+      return Promise.resolve();
+    },
+    pause() { _paused = true; (listeners['pause'] || []).forEach((fn) => fn()); },
+    _fire(type, ...args) { (listeners[type] || []).forEach((fn) => fn(...args)); },
+    _listeners: listeners,
+    _playCount: () => _playCount,
+    _resetPlayCount: () => { _playCount = 0; },
+  };
+  return a;
+}
+
+await (async () => {
+  // SCENARIO 100 — Double-play race (last-intent-wins)
+  console.log('\n=== SCENARIO 100 — double-play race (TS-19) ===');
+  _playerR._resetPlayback();
+  _playerR._resetSeek();
+  _playerR._resetController();
+  _playerR._resetElement();
+  _playerR._resetQueue();
+  const sc100Audio = _makeMockAudio();
+  let sc100Active = null;
+  _playerR.registerPlayer({
+    getAudioEl: () => sc100Audio,
+    resolveAudio: async (id) => ({ url: 'blob:' + id }),
+    peekAudio: (id) => ({ url: 'blob:' + id }),
+    resolveCover: async () => null,
+    peekCover: () => null,
+    findTrack: (id) => ({ id, name: 't-' + id }),
+    setAudioState: (patch) => { if (patch && patch.trackId !== undefined) sc100Active = patch.trackId; },
+    getActiveTrackId: () => sc100Active,
+    toast: () => {},
+    applyCover: () => {},
+    applyMetadata: () => {},
+  });
+  // 100 rapid playTrack calls cycling 5 distinct ids — the last one wins.
+  const sc100Ids = ['a', 'b', 'c', 'd', 'e'];
+  for (let i = 0; i < 100; i++) _playerR.playTrack(sc100Ids[i % 5]);
+  // Final src reflects the last play. Token should equal the play count.
+  tr('SC100.a final src is the last requested url', sc100Audio.src === 'blob:' + sc100Ids[99 % 5]);
+  tr('SC100.b intent token bumped exactly 100 times', _playerR._getIntentToken() === 100);
+  tr('SC100.c audio.play() called 100 times (1 per intent)', sc100Audio._playCount() === 100);
+  tr('SC100.d active track id matches the final intent', sc100Active === sc100Ids[99 % 5]);
+
+  // SCENARIO 101 — Seek determinism
+  console.log('\n=== SCENARIO 101 — seek determinism (TS-19) ===');
+  _playerR._resetSeek();
+  const sc101Audio = _makeMockAudio();
+  sc101Audio.duration = 200;
+  _playerR.registerPlayer({
+    getAudioEl: () => sc101Audio,
+    resolveAudio: async () => null, peekAudio: () => null, resolveCover: async () => null, peekCover: () => null,
+    findTrack: () => null, setAudioState: () => {}, getActiveTrackId: () => null,
+    toast: () => {}, applyCover: () => {}, applyMetadata: () => {},
+  });
+  _playerR.seek(10);
+  _playerR.seek(40);
+  tr('SC101.a final currentTime is 40 (not 10)', sc101Audio.currentTime === 40);
+  // seek beyond duration clamps to duration
+  _playerR.seek(99999);
+  tr('SC101.b out-of-bounds seek clamps to duration', sc101Audio.currentTime === 200);
+  // negative clamps to 0
+  _playerR.seek(-50);
+  tr('SC101.c negative seek clamps to 0', sc101Audio.currentTime === 0);
+  // Two seeks in same tick — both increment the seek token monotonically.
+  const t1 = _playerR._getSeekToken();
+  _playerR.seek(15);
+  _playerR.seek(25);
+  tr('SC101.d seek token monotonically increments', _playerR._getSeekToken() === t1 + 2);
+
+  // SCENARIO 102 — Queue autoplay (ended → next exactly once)
+  console.log('\n=== SCENARIO 102 — queue autoplay (TS-19) ===');
+  _playerR._resetPlayback();
+  _playerR._resetController();
+  _playerR._resetElement();
+  _playerR._resetQueue();
+  const sc102Audio = _makeMockAudio();
+  let sc102Active = null;
+  let sc102ApplyMetadataCalls = 0;
+  _playerR.registerPlayer({
+    getAudioEl: () => sc102Audio,
+    resolveAudio: async (id) => ({ url: 'blob:' + id }),
+    peekAudio: (id) => ({ url: 'blob:' + id }),
+    resolveCover: async () => null, peekCover: () => null,
+    findTrack: (id) => ({ id, name: 't-' + id }),
+    setAudioState: (patch) => { if (patch && patch.trackId !== undefined) sc102Active = patch.trackId; },
+    getActiveTrackId: () => sc102Active,
+    toast: () => {}, applyCover: () => {},
+    applyMetadata: () => { sc102ApplyMetadataCalls++; },
+  });
+  _playerR.setQueue(['x', 'y', 'z'], 'x');
+  _playerR.playTrack('x');
+  tr('SC102.a playTrack(x) starts x', sc102Audio.src === 'blob:x' && sc102Active === 'x');
+  // Simulate ended → should advance to y
+  sc102Audio._fire('ended');
+  tr('SC102.b on ended, autoplay advances to y', sc102Audio.src === 'blob:y');
+  sc102Audio._fire('ended');
+  tr('SC102.c on ended, advances to z', sc102Audio.src === 'blob:z');
+  // At the tail, ended is a no-op (no next).
+  sc102Audio._fire('ended');
+  tr('SC102.d at tail, ended does not crash and src stays at z', sc102Audio.src === 'blob:z');
+
+  // SCENARIO 103 — Recovery integrity (snapshot round-trip)
+  console.log('\n=== SCENARIO 103 — recovery integrity (TS-19) ===');
+  _playerR._resetPlayback();
+  _playerR._resetController();
+  _playerR._resetElement();
+  const sc103Audio = _makeMockAudio();
+  let sc103Persisted = null;
+  let sc103Active = null;
+  let sc103StateSnapshot = null;
+  _playerR.registerPlayer({
+    getAudioEl: () => sc103Audio,
+    resolveAudio: async (id) => ({ url: 'blob:' + id }), peekAudio: () => null,
+    resolveCover: async () => null, peekCover: () => null,
+    findTrack: (id) => ({ id, name: 't-' + id }),
+    setAudioState: (patch) => {
+      if (patch && patch.trackId !== undefined) sc103Active = patch.trackId;
+      sc103StateSnapshot = { ...(sc103StateSnapshot || {}), ...patch };
+    },
+    getActiveTrackId: () => sc103Active,
+    toast: () => {}, applyCover: () => {}, applyMetadata: () => {},
+    persistRecovery: (snap) => { sc103Persisted = snap; },
+    loadRecovery: () => sc103Persisted,
+  });
+  // Simulate playback then timeupdate → persistRecovery should fire
+  await _playerR.playTrack('rec1');
+  await new Promise((r) => queueMicrotask(r)); // let resolveAudio settle
+  sc103Audio.currentTime = 45;
+  sc103Audio._fire('timeupdate');
+  tr('SC103.a timeupdate persists recovery snapshot', !!sc103Persisted);
+  tr('SC103.b snapshot has trackId + currentTime', sc103Persisted && sc103Persisted.trackId === 'rec1' && sc103Persisted.currentTime === 45);
+  // Now reset controller and tryRecover — should restore state.
+  _playerR._resetController();
+  _playerR._resetElement();
+  sc103Active = null;
+  _playerR.registerPlayer({
+    getAudioEl: () => sc103Audio,
+    resolveAudio: async (id) => ({ url: 'blob:' + id }), peekAudio: () => null,
+    resolveCover: async () => null, peekCover: () => null,
+    findTrack: (id) => ({ id, name: 't-' + id }),
+    setAudioState: (patch) => {
+      if (patch && patch.trackId !== undefined) sc103Active = patch.trackId;
+    },
+    getActiveTrackId: () => sc103Active,
+    toast: () => {}, applyCover: () => {}, applyMetadata: () => {},
+    persistRecovery: (snap) => { sc103Persisted = snap; },
+    loadRecovery: () => sc103Persisted,
+  });
+  const recovered = _playerR.tryRecover();
+  tr('SC103.c tryRecover returns true', recovered === true);
+  tr('SC103.d recovered state has the original trackId', sc103Active === 'rec1');
+
+  // SCENARIO 104 — MediaSession action sync
+  console.log('\n=== SCENARIO 104 — MediaSession sync (TS-19) ===');
+  // Mock navigator.mediaSession
+  const sc104Handlers = {};
+  global.navigator = {
+    mediaSession: {
+      metadata: null,
+      setActionHandler: (name, fn) => { sc104Handlers[name] = fn; },
+    },
+  };
+  global.MediaMetadata = function MockMM(opts) { Object.assign(this, opts); };
+  _playerR._resetMediaSession();
+  _playerR._resetController();
+  _playerR._resetElement();
+  _playerR._resetPlayback();
+  const sc104Audio = _makeMockAudio();
+  let sc104Active = null;
+  _playerR.registerPlayer({
+    getAudioEl: () => sc104Audio,
+    resolveAudio: async (id) => ({ url: 'blob:' + id }),
+    peekAudio: (id) => ({ url: 'blob:' + id }),
+    resolveCover: async () => null, peekCover: () => null,
+    findTrack: (id) => ({ id, name: 't-' + id, feat: 'feat-' + id }),
+    setAudioState: (patch) => { if (patch && patch.trackId !== undefined) sc104Active = patch.trackId; },
+    getActiveTrackId: () => sc104Active,
+    toast: () => {}, applyCover: () => {}, applyMetadata: () => {},
+  });
+  tr('SC104.a play handler installed', typeof sc104Handlers.play === 'function');
+  tr('SC104.b pause handler installed', typeof sc104Handlers.pause === 'function');
+  tr('SC104.c nexttrack handler installed', typeof sc104Handlers.nexttrack === 'function');
+  tr('SC104.d previoustrack handler installed', typeof sc104Handlers.previoustrack === 'function');
+  // Trigger pause via mediaSession
+  _playerR.playTrack('ms1');
+  const beforePause = sc104Audio.paused;
+  sc104Handlers.pause();
+  tr('SC104.e mediaSession pause action pauses audio', beforePause === false && sc104Audio.paused === true);
+  // Metadata reflects the active track
+  tr('SC104.f mediaSession metadata is set on play', !!global.navigator.mediaSession.metadata);
+  tr('SC104.g metadata title matches track name', global.navigator.mediaSession.metadata.title === 't-ms1');
+
+  // SCENARIO 105 — Rapid source swap (A → B → C → only C wins)
+  console.log('\n=== SCENARIO 105 — rapid source swap (TS-19) ===');
+  _playerR._resetPlayback();
+  _playerR._resetController();
+  _playerR._resetElement();
+  _playerR._resetQueue();
+  const sc105Audio = _makeMockAudio();
+  let sc105Active = null;
+  _playerR.registerPlayer({
+    getAudioEl: () => sc105Audio,
+    resolveAudio: async (id) => ({ url: 'blob:' + id }),
+    peekAudio: (id) => ({ url: 'blob:' + id }),
+    resolveCover: async () => null, peekCover: () => null,
+    findTrack: (id) => ({ id, name: 't-' + id }),
+    setAudioState: (patch) => { if (patch && patch.trackId !== undefined) sc105Active = patch.trackId; },
+    getActiveTrackId: () => sc105Active,
+    toast: () => {}, applyCover: () => {}, applyMetadata: () => {},
+  });
+  _playerR.playTrack('A');
+  _playerR.playTrack('B');
+  _playerR.playTrack('C');
+  tr('SC105.a final src is C', sc105Audio.src === 'blob:C');
+  tr('SC105.b active track is C', sc105Active === 'C');
+  tr('SC105.c intent token bumped 3 times', _playerR._getIntentToken() === 3);
+  // The mock's play() resolves immediately so older promises don't leak.
+  // Verify pause→resume after rapid swap still works.
+  _playerR.pause();
+  tr('SC105.d pause after swap pauses audio', sc105Audio.paused === true);
+  tr('SC105.e pause bumped the token to 4', _playerR._getIntentToken() === 4);
+
+  // SCENARIO 106 — Listener leak detection (100 attach/detach cycles)
+  console.log('\n=== SCENARIO 106 — listener leak detection (TS-19) ===');
+  _playerR._resetElement();
+  _playerR._resetController();
+  const sc106Audio = _makeMockAudio();
+  let sc106Active = null;
+  _playerR.registerPlayer({
+    getAudioEl: () => sc106Audio,
+    resolveAudio: async () => null, peekAudio: () => null,
+    resolveCover: async () => null, peekCover: () => null,
+    findTrack: () => null,
+    setAudioState: (patch) => { if (patch && patch.trackId !== undefined) sc106Active = patch.trackId; },
+    getActiveTrackId: () => sc106Active,
+    toast: () => {}, applyCover: () => {}, applyMetadata: () => {},
+  });
+  // After registerPlayer → 2 orchestration listeners (ended + timeupdate)
+  const baselineCount = _playerR._getListenerCount();
+  tr('SC106.a baseline listener count is 2', baselineCount === 2);
+  // Audio element listener count: same as orchestration count
+  const audioListenerCount = (sc106Audio._listeners.ended || []).length + (sc106Audio._listeners.timeupdate || []).length;
+  tr('SC106.b audio element has exactly 2 orchestration listeners', audioListenerCount === 2);
+  // 100 reset+register cycles must not grow listeners on the audio element
+  for (let i = 0; i < 100; i++) {
+    _playerR._resetElement();
+    _playerR._resetController();
+    _playerR.registerPlayer({
+      getAudioEl: () => sc106Audio,
+      resolveAudio: async () => null, peekAudio: () => null,
+      resolveCover: async () => null, peekCover: () => null,
+      findTrack: () => null, setAudioState: () => {}, getActiveTrackId: () => null,
+      toast: () => {}, applyCover: () => {}, applyMetadata: () => {},
+    });
+  }
+  const finalAudioCount = (sc106Audio._listeners.ended || []).length + (sc106Audio._listeners.timeupdate || []).length;
+  tr('SC106.c after 100 cycles audio listener count still 2 (no leak)', finalAudioCount === 2);
+  tr('SC106.d module-side listener count still 2', _playerR._getListenerCount() === 2);
+})();
+
+// ---------------------------------------------------------------------------
+// SUMMARY — runs AFTER the TS-18/TS-19 await blocks complete.
 // ---------------------------------------------------------------------------
 console.log('\n=== SUMMARY ===');
 console.log('Pass: ' + pass + '\nFail: ' + fail);

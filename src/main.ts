@@ -556,6 +556,93 @@ type CacheWindow = {
   cw.idbDeleteCover = cacheIdbDeleteCover;
 }
 
+// TS-19 — mini-player orchestration. Single entry point for playback intent.
+// Replaces inline `playTrackInMini` + `_playTrackInMiniAsync` (~50 lines) and
+// adds token-protected race-safety + autoplay queue + recovery snapshots.
+import {
+  registerPlayer,
+  playTrack as playerPlayTrack,
+  pause as playerPause,
+  resume as playerResume,
+  next as playerNext,
+  previous as playerPrevious,
+  seek as playerSeek,
+  seekRatio as playerSeekRatio,
+  setQueue as playerSetQueue,
+  tryRecover as playerTryRecover,
+  type PlayerDeps,
+  type PlayerRecoverySnapshot,
+  type PlayerTrack,
+} from './features/audio/player';
+
+type PlayerLegacyGlobals = {
+  state?: { tracks?: PlayerTrack[] };
+  toast?: (msg: string) => void;
+};
+
+const RECOVERY_LS_KEY = 'degzzy_player_recovery_v1';
+
+const _playerDeps: PlayerDeps = {
+  getAudioEl: () => document.getElementById('miniPlayerAudio') as HTMLAudioElement | null,
+  resolveAudio: (id) => cacheGetAudioUrl(id),
+  peekAudio: (id) => cachePeekAudioUrl(id),
+  resolveCover: (id) => cacheGetCoverUrl(id),
+  peekCover: (id) => cachePeekCoverUrl(id),
+  findTrack: (id) => {
+    const w = window as unknown as PlayerLegacyGlobals;
+    const tracks = (w.state && Array.isArray(w.state.tracks)) ? w.state.tracks : [];
+    return tracks.find((t) => t.id === id) || null;
+  },
+  setAudioState: (patch) => audioSetAudioState(patch),
+  getActiveTrackId: () => audioGetAudioState().trackId,
+  toast: (msg) => {
+    const w = window as unknown as PlayerLegacyGlobals;
+    if (typeof w.toast === 'function') w.toast(msg);
+  },
+  applyCover: (url) => MiniPlayer.applyCover(url),
+  applyMetadata: (track, coverUrl) => MiniPlayer.applyMetadata(track, coverUrl),
+  persistRecovery: (snapshot) => {
+    try { localStorage.setItem(RECOVERY_LS_KEY, JSON.stringify(snapshot)); } catch { /* quota */ }
+  },
+  loadRecovery: () => {
+    try {
+      const raw = localStorage.getItem(RECOVERY_LS_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as PlayerRecoverySnapshot;
+      if (!parsed || !parsed.trackId) return null;
+      return parsed;
+    } catch { return null; }
+  },
+};
+registerPlayer(_playerDeps);
+
+// Re-attach the player entry points on window so the inline `playTrackInMini`
+// shim resolves through the global scope chain. The queue helper is also
+// exposed so the catalogue can seed the autoplay order on every render.
+type PlayerWindow = {
+  playTrackTS?: typeof playerPlayTrack;
+  playerPauseTS?: typeof playerPause;
+  playerResumeTS?: typeof playerResume;
+  playerNextTS?: typeof playerNext;
+  playerPreviousTS?: typeof playerPrevious;
+  playerSeekTS?: typeof playerSeek;
+  playerSeekRatioTS?: typeof playerSeekRatio;
+  playerSetQueueTS?: typeof playerSetQueue;
+  playerTryRecoverTS?: typeof playerTryRecover;
+};
+{
+  const pw = window as unknown as PlayerWindow;
+  pw.playTrackTS = playerPlayTrack;
+  pw.playerPauseTS = playerPause;
+  pw.playerResumeTS = playerResume;
+  pw.playerNextTS = playerNext;
+  pw.playerPreviousTS = playerPrevious;
+  pw.playerSeekTS = playerSeek;
+  pw.playerSeekRatioTS = playerSeekRatio;
+  pw.playerSetQueueTS = playerSetQueue;
+  pw.playerTryRecoverTS = playerTryRecover;
+}
+
 // Detail overlay lifecycle — historically inline `function openDetail()`,
 // `function closeDetail()`, `function bindDetailClose()` declared at
 // module scope. Re-attached on `window` to keep the legacy inline call

@@ -1,27 +1,33 @@
 // ============================================================================
-// MiniPlayer — pure addition, no audio-logic changes.
-// Extracted to TypeScript in Phase TS-5.
+// MiniPlayer — VIEW layer for the "now playing" pill. Phase TS-19.
 //
-// Encapsulated audio "now playing" pill UI. Reads track + audio URL + cover
-// URL, drives a hidden <audio> element bound to the global AudioStore.
-// Surfaces metadata to Media Session API (iOS lock screen, Control Center,
-// CarPlay) when supported.
+// Pre-TS-19 this module owned both the DOM and the playback orchestration
+// (audio.src swap, audio.play(), mediaSession metadata). TS-19 split those
+// concerns: the controller in /src/features/audio/player/ now owns
+// playback intent and race protection; this module is now JUST the
+// title/sub/cover view + the click handlers that translate user gestures
+// into controller intents.
 //
 // PUBLIC SURFACE:
-//   - init()                          → idempotent: wire DOM + audio events
-//   - show(track, audioUrl, coverUrl) → show pill, set audio src, play
-//   - hide()                          → pause, clear src, hide pill
+//   - init()                            → idempotent: wire DOM listeners
+//   - show(track, audioUrl, coverUrl)   → legacy: applyMetadata + playUrl
+//                                         (kept for inline callers that
+//                                         haven't migrated to controller)
+//   - applyMetadata(track, coverUrl)    → update title/sub/cover-bg + hidden=false
+//   - applyCover(url)                   → update ONLY the cover backgroundImage
+//   - hide()                            → stop + clear src + hidden=true
 //
 // DEPENDENCIES:
-//   - hookAudioToStore + setAudioState — imported directly from
-//     /src/features/audio (TS-17, single source of truth)
-//   - icon() — TS export from /src/lib/render-utils
-//   - statusLabel(status), openDetail('track', id) — still bare globals,
-//     read lazily via typeof checks (degrade silently if unavailable)
+//   - hookAudioToStore + setAudioState — from /src/features/audio (TS-17)
+//   - playUrl + stop                   — from /src/features/audio/player (TS-19)
+//   - playTrack                        — from /src/features/audio/player (TS-19)
+//   - icon()                           — from /src/lib/render-utils
+//   - statusLabel, openDetail          — still bare globals (legacy)
 // ============================================================================
 
 import { icon } from '../lib/render-utils';
-import { hookAudioToStore, setAudioState } from './audio';
+import { hookAudioToStore } from './audio';
+import { playUrl, stop as playerStop, playTrack, pause as playerPause, resume as playerResume, seekToRatio } from './audio/player';
 
 interface MiniPlayerTrack {
   id: string;
@@ -30,23 +36,14 @@ interface MiniPlayerTrack {
   feat?: string;
 }
 
-interface AudioStateUpdate {
-  trackId: string | null;
-  isPlaying?: boolean;
-  currentTime?: number;
-  duration?: number;
-  loading?: boolean;
-}
-
 export interface MiniPlayerAPI {
   init: () => void;
   show: (track: MiniPlayerTrack, audioUrl: string, coverUrl?: string) => void;
+  applyMetadata: (track: MiniPlayerTrack, coverUrl: string | null) => void;
+  applyCover: (url: string) => void;
   hide: () => void;
 }
 
-// Cast helpers — these globals live on `window` because they are still
-// defined inline in index.html. Each accessor returns `null` if the global
-// isn't yet attached (e.g. during the very early boot window).
 type Win = Window & {
   statusLabel?: (status?: string) => string;
   openDetail?: (kind: string, id: string) => void;
@@ -56,11 +53,6 @@ function w(): Win {
   return window as unknown as Win;
 }
 
-// AudioStateUpdate is preserved for the existing call-site shape, but it is
-// now satisfied by the imported `setAudioState` from /src/features/audio.
-void ({} as AudioStateUpdate);
-
-// Module-private state (matches the closure scope of the inline IIFE).
 let el: HTMLElement | null = null;
 let audio: HTMLAudioElement | null = null;
 let fill: HTMLElement | null = null;
@@ -85,21 +77,21 @@ function init(): void {
   closeBtn = document.getElementById('miniPlayerClose');
   if (!audio || !playBtn) return;
 
-  // Wire the audio element to the global AudioStore. All pill UI
-  // (catalogue, detail, mini-player) reflects state from the store rather
-  // than each listener reaching into the DOM independently.
+  // Wire the audio element to the global AudioStore. The controller will
+  // also attach orchestration listeners (ended → autoplay, timeupdate →
+  // recovery snapshot) via the element module.
   hookAudioToStore(audio);
 
   playBtn.innerHTML = icon('play', 18);
   if (closeBtn) closeBtn.innerHTML = icon('close', 14);
 
-  // Buttons inside the pill stop propagation so the surrounding "open
-  // detail" tap area doesn't fire on a play/pause/close press.
+  // Play/pause button — delegate to the controller so the token-protected
+  // playback layer handles race conditions.
   playBtn.addEventListener('click', (e: Event) => {
     e.stopPropagation();
     if (!audio) return;
-    if (audio.paused) audio.play().catch(() => {});
-    else audio.pause();
+    if (audio.paused) playerResume();
+    else playerPause();
   });
   if (closeBtn) {
     closeBtn.addEventListener('click', (e: Event) => { e.stopPropagation(); hide(); });
@@ -111,12 +103,13 @@ function init(): void {
       if (currentTrackId && typeof od === 'function') od('track', currentTrackId);
     });
   }
-  // Tapping anywhere else on the pill (title/sub area) opens the detail.
-  // Same intent as Apple Music's "tap pill to expand to Now Playing".
   el.addEventListener('click', () => {
     const od = w().openDetail;
     if (currentTrackId && typeof od === 'function') od('track', currentTrackId);
   });
+
+  // VIEW listeners: icon swap + scrubber fill. Race-free because they only
+  // mirror the element's events into the DOM.
   audio.addEventListener('play',  () => { if (playBtn) playBtn.innerHTML = icon('pause', 18); });
   audio.addEventListener('pause', () => { if (playBtn) playBtn.innerHTML = icon('play', 18); });
   audio.addEventListener('ended', () => {
@@ -128,9 +121,7 @@ function init(): void {
     if (fill) fill.style.width = ((audio.currentTime / audio.duration) * 100).toFixed(2) + '%';
   });
 
-  // Tap the scrubber to seek. The hit area is the whole scrubber wrapper
-  // so even a 4px-tall fill is comfortably reachable. We pause→seek→resume
-  // to avoid the brief blip iOS gives if you reposition during active playback.
+  // Scrubber tap → controller seek (token-protected, race-safe).
   const scrubberWrap = el.querySelector<HTMLElement>('.mini-player-scrubber');
   if (scrubberWrap) {
     scrubberWrap.addEventListener('click', (e: MouseEvent) => {
@@ -138,99 +129,61 @@ function init(): void {
       if (!audio || !audio.duration || isNaN(audio.duration)) return;
       const rect = scrubberWrap.getBoundingClientRect();
       const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const wasPlaying = !audio.paused;
-      if (wasPlaying) audio.pause();
-      try { audio.currentTime = ratio * audio.duration; } catch (_err) { /* no-op */ }
-      if (wasPlaying) audio.play().catch(() => {});
+      seekToRatio(ratio);
     });
-  }
-
-  // Media Session API — surfaces title/artist/cover on the iOS lock
-  // screen, Control Center, Apple Watch, and CarPlay. Hardware play/pause
-  // keys from AirPods / Bluetooth headphones route to the same handlers
-  // as the on-screen buttons. mediaSession is undefined on older Safari —
-  // guarded for safety.
-  if ('mediaSession' in navigator) {
-    try {
-      navigator.mediaSession.setActionHandler('play',  () => { if (audio) audio.play().catch(() => {}); });
-      navigator.mediaSession.setActionHandler('pause', () => { if (audio) audio.pause(); });
-      navigator.mediaSession.setActionHandler('seekbackward', (details) => {
-        if (!audio) return;
-        const skip = (details && details.seekOffset) || 10;
-        try { audio.currentTime = Math.max(0, audio.currentTime - skip); } catch (_e) { /* no-op */ }
-      });
-      navigator.mediaSession.setActionHandler('seekforward', (details) => {
-        if (!audio) return;
-        const skip = (details && details.seekOffset) || 10;
-        try { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + skip); } catch (_e) { /* no-op */ }
-      });
-      navigator.mediaSession.setActionHandler('seekto', (details) => {
-        if (!audio) return;
-        if (details && typeof details.seekTime === 'number') {
-          try { audio.currentTime = details.seekTime; } catch (_e) { /* no-op */ }
-        }
-      });
-    } catch (_e) { /* no-op — browser without all action handlers */ }
   }
 
   initialized = true;
 }
 
-function show(track: MiniPlayerTrack, audioUrl: string, coverUrl?: string): void {
+/**
+ * Update the title/sub/cover/visibility WITHOUT touching audio.src or
+ * triggering play. Called by the controller right before playUrl().
+ */
+function applyMetadata(track: MiniPlayerTrack, coverUrl: string | null): void {
   init();
-  if (!el || !track || !audio || !titleEl || !subEl || !coverBtn) return;
-  const isNewTrack = currentTrackId !== track.id;
+  if (!el || !titleEl || !subEl || !coverBtn) return;
   currentTrackId = track.id;
-  const title = track.name || 'Sans titre';
   const statusFn = w().statusLabel;
   const statusText = typeof statusFn === 'function' ? statusFn(track.status) : '';
   const subtitle = [statusText, track.feat].filter(Boolean).join(' · ') || 'Noname';
-  titleEl.textContent = title;
+  titleEl.textContent = track.name || 'Sans titre';
   subEl.textContent = subtitle;
   coverBtn.style.backgroundImage = coverUrl ? `url('${coverUrl}')` : 'none';
-
-  // Notify the store BEFORE swapping src so any pill in the DOM
-  // transitions its "active" highlight instantly, and the previous active
-  // pill resets to 0% / play-icon without waiting for the new audio events.
-  if (isNewTrack) {
-    setAudioState({ trackId: track.id, currentTime: 0, duration: 0, loading: true });
-  }
-  if (audio.src !== audioUrl) audio.src = audioUrl;
   el.hidden = false;
+}
 
-  // Surface metadata to the iOS lock screen / Control Center / Apple
-  // Watch / CarPlay. The cover is a blob: URL inside our origin → it
-  // works as an artwork source. Falls back to no artwork if no cover yet.
-  if ('mediaSession' in navigator) {
-    try {
-      const artwork = coverUrl ? [
-        { src: coverUrl, sizes: '96x96',   type: 'image/png' },
-        { src: coverUrl, sizes: '192x192', type: 'image/png' },
-        { src: coverUrl, sizes: '512x512', type: 'image/png' },
-      ] : [];
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title,
-        artist: 'Degzzy',
-        album: subtitle,
-        artwork,
-      });
-    } catch (_e) { /* MediaMetadata unsupported on older browsers */ }
-  }
-  audio.play().catch(() => { /* user gesture required on some browsers */ });
+/** Update ONLY the cover backgroundImage (called when cover resolves late). */
+function applyCover(url: string): void {
+  if (coverBtn) coverBtn.style.backgroundImage = `url('${url}')`;
+}
+
+/**
+ * LEGACY entry point — applyMetadata + playUrl. Used by inline callers
+ * that haven't moved to controller.playTrack yet. Once TS-20 lands, this
+ * becomes deprecated.
+ */
+function show(track: MiniPlayerTrack, audioUrl: string, coverUrl?: string): void {
+  applyMetadata(track, coverUrl || null);
+  playUrl(audioUrl);
 }
 
 function hide(): void {
-  if (!el || !audio) return;
-  audio.pause();
-  audio.src = '';
+  if (!el) return;
+  playerStop(); // pauses + clears src + bumps the intent token
   el.hidden = true;
   currentTrackId = null;
-  // Clear the store so every pill in the DOM reverts to inactive/0%.
-  setAudioState({ trackId: null, isPlaying: false, currentTime: 0, duration: 0, loading: false });
 }
 
 export const MiniPlayer: MiniPlayerAPI = Object.freeze({
   init: init,
   show: show,
+  applyMetadata: applyMetadata,
+  applyCover: applyCover,
   hide: hide,
 });
+
+// Test hook (used by /src/main.ts to drive the controller's applyMetadata dep).
+export function _getCurrentMiniPlayerTrackId(): string | null {
+  return currentTrackId;
+}

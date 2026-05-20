@@ -11366,51 +11366,16 @@ async function hydrateAllAudios() {
   }
 }
 
-/* Plays a catalogue / detail track via the MiniPlayer. CRITICAL: must stay
-   synchronous so iOS Safari's autoplay policy accepts audio.play() inside
-   the user-gesture task — any await between the tap and play() rejects. */
+/* Plays a catalogue / detail track via the MiniPlayer.
+   EXTRACTED in Phase TS-19 to /src/features/audio/player/controller.ts.
+   The TS controller owns the token-protected race-safety, queue/autoplay,
+   and recovery. The inline shim below preserves the legacy bare-global
+   name so existing inline call sites (`onclick="playTrackInMini('t1')"`)
+   keep working unchanged — they now resolve to window.playTrackTS.
+   CRITICAL invariant preserved: the controller's hot path (cache peek →
+   playUrl) stays SYNCHRONOUS so iOS Safari's autoplay gesture survives. */
 function playTrackInMini(trackId) {
-  // Same active track → toggle pause/resume on the existing playback.
-  if (_audioState.trackId === trackId) {
-    const audio = document.getElementById('miniPlayerAudio');
-    if (audio) {
-      if (audio.paused) audio.play().catch(() => {});
-      else audio.pause();
-      return;
-    }
-  }
-  const track = (state.tracks || []).find(t => t.id === trackId);
-  if (!track) return;
-  // TS-18 — synchronous cache peek goes through the TS module's in-memory store.
-  // Falls back to the async resolve path on miss.
-  const cached = typeof window.peekTrackAudioUrl === 'function' ? window.peekTrackAudioUrl(trackId) : null;
-  if (cached && cached.url) {
-    const coverUrl = typeof window.peekTrackCoverUrl === 'function' ? window.peekTrackCoverUrl(trackId) : null;
-    MiniPlayer.show(track, cached.url, coverUrl);
-    if (!coverUrl) {
-      getTrackCoverUrl(trackId).then(u => {
-        if (u) {
-          const coverBtn = document.getElementById('miniPlayerCover');
-          if (coverBtn) coverBtn.style.backgroundImage = `url('${u}')`;
-        }
-      }).catch(() => {});
-    }
-    return;
-  }
-  _playTrackInMiniAsync(trackId);
-}
-
-async function _playTrackInMiniAsync(trackId) {
-  const track = (state.tracks || []).find(t => t.id === trackId);
-  if (!track) return;
-  const audioData = await getTrackAudioUrl(trackId);
-  if (!audioData || !audioData.url) {
-    toast('Audio introuvable — recharge l\'app.');
-    return;
-  }
-  let coverUrl = null;
-  try { coverUrl = await getTrackCoverUrl(trackId); } catch (e) {}
-  MiniPlayer.show(track, audioData.url, coverUrl);
+  if (typeof window.playTrackTS === 'function') return window.playTrackTS(trackId);
 }
 
 async function handleTrackAudioUpload(trackId, ev) {
