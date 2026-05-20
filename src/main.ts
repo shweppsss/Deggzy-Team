@@ -131,6 +131,14 @@ import {
   OVERLOAD_THRESHOLD,
   type CalendarDeps,
 } from './render/calendar';
+// TS-16 — calendar drag/drop + resize runtime.
+import {
+  registerCalendarRuntime,
+  attachWeekInteractions as runtimeAttachWeekInteractions,
+  attachCalendarInteractions as runtimeAttachCalendarInteractions,
+  type CalendarDeps as _CalendarRuntimeDeps,
+  type CalendarEvent as _CalendarRuntimeEvent,
+} from './features/calendar';
 import {
   toIsoDate,
   parseIsoDate,
@@ -1033,18 +1041,55 @@ registerSectionRenderer(CALENDAR_SECTION, () => {
   renderCalendarView(_buildCalendarDeps());
 });
 
-// Register the inline drag-handler attach functions as the calendar's
-// interaction hooks. The TS render module calls these after each render
-// pass so the freshly-mounted pills become draggable again.
+// TS-16 — wire the calendar drag/drop runtime to legacy state + helpers.
+// `state.events`, `save`, `renderCalendar`, etc. are still legacy globals,
+// so we adapt them through deps closures. Zero `window.X` lives in
+// /src/features/calendar/ itself.
+function _buildCalendarRuntimeDeps(): _CalendarRuntimeDeps {
+  type LegacyGlobals = {
+    state?: { events?: _CalendarRuntimeEvent[] };
+    _stampEventUpdate?: (ev: _CalendarRuntimeEvent) => void;
+    save?: () => void;
+    renderCalendar?: () => void;
+    renderDashboard?: () => void;
+    toast?: (msg: string) => void;
+    haptic?: (ms: number) => void;
+    openDetail?: (kind: 'event', id: string) => void;
+    openEventModal?: (date: string) => void;
+  };
+  const w = window as unknown as LegacyGlobals;
+  return {
+    findEvent: (id: string) => {
+      const evs = w.state && Array.isArray(w.state.events) ? w.state.events : [];
+      return evs.find((e) => e && e.id === id) || null;
+    },
+    stampEventUpdate: (ev) => {
+      if (typeof w._stampEventUpdate === 'function') w._stampEventUpdate(ev);
+    },
+    save: () => { if (typeof w.save === 'function') w.save(); },
+    renderCalendar: () => { if (typeof w.renderCalendar === 'function') w.renderCalendar(); },
+    renderDashboard: () => { if (typeof w.renderDashboard === 'function') w.renderDashboard(); },
+    toast: (msg) => { if (typeof w.toast === 'function') w.toast(msg); },
+    haptic: (ms) => { if (typeof w.haptic === 'function') w.haptic(ms); },
+    openDetail: (kind, id) => { if (typeof w.openDetail === 'function') w.openDetail(kind, id); },
+    openEventModal: (date) => { if (typeof w.openEventModal === 'function') w.openEventModal(date); },
+    prefillEventTimeHour: (hour) => {
+      const t = document.getElementById('eventTime') as HTMLInputElement | null;
+      if (t) t.value = String(hour).padStart(2, '0') + ':00';
+    },
+  };
+}
+registerCalendarRuntime(_buildCalendarRuntimeDeps());
+// Window shims so the inline thin-wrappers (kept in index.html) can call
+// the TS runtime without a direct import.
+(window as unknown as { attachWeekInteractionsTS?: () => void }).attachWeekInteractionsTS = runtimeAttachWeekInteractions;
+(window as unknown as { attachCalendarInteractionsTS?: () => void }).attachCalendarInteractionsTS = runtimeAttachCalendarInteractions;
+
+// Register the drag-handler attach functions (now TS) as the calendar render
+// module's interaction hooks. Called after each render pass.
 registerCalendarInteractionHooks({
-  attachWeekInteractions: () => {
-    const w = window as unknown as { attachWeekInteractions?: () => void };
-    if (typeof w.attachWeekInteractions === 'function') w.attachWeekInteractions();
-  },
-  attachMonthInteractions: () => {
-    const w = window as unknown as { attachCalendarInteractions?: () => void };
-    if (typeof w.attachCalendarInteractions === 'function') w.attachCalendarInteractions();
-  },
+  attachWeekInteractions: () => { runtimeAttachWeekInteractions(); },
+  attachMonthInteractions: () => { runtimeAttachCalendarInteractions(); },
   upgradeEventAvatars: async () => {
     const w = window as unknown as { upgradeEventAvatars?: () => Promise<void> };
     if (typeof w.upgradeEventAvatars === 'function') {

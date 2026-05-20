@@ -129,6 +129,14 @@ function makePill(id) {
 // ---------------------------------------------------------------------------
 global.document = document;
 global.window = { App: {}, scrollTo() {} };
+// TS-16 — the bundled calendar runtime uses `instanceof Element` for narrowing.
+// Provide a permissive shim so any object passes the check (the harness's pill
+// mocks are plain objects).
+global.Element = function Element() {};
+Object.defineProperty(global.Element, Symbol.hasInstance, {
+  value: () => true,
+});
+global.HTMLElement = global.Element;
 // state.events.find is patched so resize/drag handlers always get a valid event
 // regardless of the test's synthetic IDs. The real find() is kept for completeness
 // but defaults to a generic event with a time field so the resize startMins check
@@ -222,24 +230,12 @@ function extractFn(name) {
 
 // Extract everything we need
 const sources = [
-  // Calendar week drag (5 fns)
-  extractFn('_onWeekEventPointerDown'),
-  extractFn('_onWeekEventPointerMove'),
-  extractFn('_onWeekEventPointerUp'),
-  extractFn('_onWeekDragKeydown'),
-  extractFn('_cleanupWeekDrag'),
-  // Calendar week resize (5 fns) — added in 0.13 T2
-  extractFn('_onWeekEventResizeDown'),
-  extractFn('_onWeekEventResizeMove'),
-  extractFn('_onWeekEventResizeUp'),
-  extractFn('_onWeekResizeKeydown'),
-  extractFn('_cleanupWeekResize'),
-  // Calendar month-grid drag (5 fns) — added in 0.13 T2
-  extractFn('_onCalEventPointerDown'),
-  extractFn('_onCalEventPointerMove'),
-  extractFn('_onCalEventPointerUp'),
-  extractFn('_onCalDragKeydown'),
-  extractFn('_cleanupCalDrag'),
+  // TS-16 — calendar week/month drag + week resize handlers MOVED to
+  // /src/features/calendar/{week-drag,week-resize,month-drag}.ts. They are
+  // bundled below (__CALENDAR_RUNTIME_BUNDLE__) and re-injected as the
+  // historical `_on*` names, so SC1-9 + SC25-32 + SC49-53 keep exercising
+  // the SAME real implementation — through the build graph rather than
+  // scraped from index.html.
   // Account menu (4 fns) — toggleAccountMenu was renamed to
   // _toggleAccountMenuImpl in 0.13 T3 (legacy surface removed).
   extractFn('_accountMenuEscapeKey'),
@@ -436,10 +432,72 @@ global.getPinLockState_auth = _authExports.getPinLockState;
 global.recordPinFailure_auth = _authExports.recordPinFailure;
 global.clearPinFailures_auth = _authExports.clearPinFailures;
 
+// ---------------------------------------------------------------------------
+// TS-16 — load calendar drag/drop runtime from /src/features/calendar/.
+// Same bundling pattern as TS-6/TS-9/TS-10. Provides week drag, week resize,
+// month drag handlers + cleanup hooks. Exposed under their historical
+// `_on*` / `_cleanup*` names so SC1-9 + SC25-32 + SC49-53 keep exercising
+// the SAME real implementation through the build graph.
+// ---------------------------------------------------------------------------
+const calRuntimeBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'features', 'calendar', 'index.ts')],
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  target: 'es2020',
+  write: false,
+  logLevel: 'silent',
+});
+const calRuntimeCjs = calRuntimeBundle.outputFiles[0].text;
+const _calRuntimeMod = { exports: {} };
+(function (module, exports, require) {
+  // eslint-disable-next-line no-eval
+  eval(calRuntimeCjs);
+})(_calRuntimeMod, _calRuntimeMod.exports, require);
+const _calRuntimeExports = _calRuntimeMod.exports;
+const _missingCalFns = [
+  'registerCalendarRuntime',
+  'onWeekEventPointerDown', 'onWeekEventResizeDown', 'onCalEventPointerDown',
+  '_getWeekDragState', '_getWeekResizeState', '_getMonthDragState',
+  '_resetWeekDrag', '_resetWeekResize', '_resetMonthDrag',
+].filter((fn) => typeof _calRuntimeExports[fn] !== 'function');
+if (_missingCalFns.length) {
+  throw new Error('TS-16 bundle missing exports: ' + _missingCalFns.join(','));
+}
+// Register harness-safe deps. `findEvent` must return a valid event with a
+// `time` field so the resize handler doesn't bail early at the startMins
+// check. The other deps are no-ops because the harness only asserts on
+// listener counts + private state, never on the save → render → toast tail.
+_calRuntimeExports.registerCalendarRuntime({
+  findEvent: () => ({ id: 'any', date: '2026-05-17', time: '10:00', duration: 60, title: 'fake' }),
+  stampEventUpdate: () => {},
+  save: () => {},
+  renderCalendar: () => {},
+  renderDashboard: () => {},
+  toast: () => {},
+  haptic: () => {},
+  openDetail: () => {},
+  openEventModal: () => {},
+});
+// Expose under the harness's historical names so the existing test code
+// keeps reading `F._onWeekEventPointerDown` etc.
+global._onWeekEventPointerDown_cal = _calRuntimeExports.onWeekEventPointerDown;
+global._onWeekEventResizeDown_cal = _calRuntimeExports.onWeekEventResizeDown;
+global._onCalEventPointerDown_cal = _calRuntimeExports.onCalEventPointerDown;
+global._getWeekDragState_cal = _calRuntimeExports._getWeekDragState;
+global._getWeekResizeState_cal = _calRuntimeExports._getWeekResizeState;
+global._getMonthDragState_cal = _calRuntimeExports._getMonthDragState;
+global._resetWeekDrag_cal = _calRuntimeExports._resetWeekDrag;
+global._resetWeekResize_cal = _calRuntimeExports._resetWeekResize;
+global._resetMonthDrag_cal = _calRuntimeExports._resetMonthDrag;
+
 // Wrap in IIFE so the extracted functions live in a scope we control.
 // We use `var` declarations explicitly (the extracted source uses `function`
 // declarations which hoist).
 const harness = `
+  // TS-16 — _weekDrag/_weekResize/_calDrag are now module-private inside the
+  // bundled /src/features/calendar/ runtime. The locals below are retained
+  // only as legacy placeholders (not read by the TS module).
   var _weekDrag = null;
   var _weekResize = null;
   var _calDrag = null;
@@ -448,23 +506,16 @@ const harness = `
   var _inspiDraft = null;
   ${sources.join('\n\n')}
 
-  // Expose to outer for the test
+  // Expose to outer for the test. TS-16: the _on* / _cleanup* calendar
+  // handlers come from the bundled runtime (registered as no-op deps above),
+  // exposed via global._*_cal aliases.
   globalThis.__fns = {
-    _onWeekEventPointerDown,
-    _onWeekEventPointerMove,
-    _onWeekEventPointerUp,
-    _onWeekDragKeydown,
-    _cleanupWeekDrag,
-    _onWeekEventResizeDown,
-    _onWeekEventResizeMove,
-    _onWeekEventResizeUp,
-    _onWeekResizeKeydown,
-    _cleanupWeekResize,
-    _onCalEventPointerDown,
-    _onCalEventPointerMove,
-    _onCalEventPointerUp,
-    _onCalDragKeydown,
-    _cleanupCalDrag,
+    _onWeekEventPointerDown: global._onWeekEventPointerDown_cal,
+    _cleanupWeekDrag: () => global._resetWeekDrag_cal(),
+    _onWeekEventResizeDown: global._onWeekEventResizeDown_cal,
+    _cleanupWeekResize: () => global._resetWeekResize_cal(),
+    _onCalEventPointerDown: global._onCalEventPointerDown_cal,
+    _cleanupCalDrag: () => global._resetMonthDrag_cal(),
     _accountMenuEscapeKey,
     _toggleAccountMenuImpl,
     _accountMenuOutsideClick,
@@ -484,9 +535,9 @@ const harness = `
     _globalModalOutsideClickFn,
     _pinKeyboardHandlerFn,
   };
-  globalThis.__getWeekDrag = function() { return _weekDrag; };
-  globalThis.__getWeekResize = function() { return _weekResize; };
-  globalThis.__getCalDrag = function() { return _calDrag; };
+  globalThis.__getWeekDrag = function() { return global._getWeekDragState_cal(); };
+  globalThis.__getWeekResize = function() { return global._getWeekResizeState_cal(); };
+  globalThis.__getCalDrag = function() { return global._getMonthDragState_cal(); };
 `;
 eval(harness);
 const F = global.__fns;
@@ -3322,8 +3373,12 @@ eq('SC77.b CAPSULES_SECTION constant === "capsules"', _capsulesR.CAPSULES_SECTIO
 // TS-15 — PLAN / KPI / BUDGET / CATALOGUE SCENARIOS (SC78..SC83)
 // ===========================================================================
 function _bundle(p) {
+  // Default to /src/render/<p>/index.ts; a leading "../" escapes to /src/.
+  const base = p.startsWith('../')
+    ? path.join(__dirname, '..', '..', 'src', p.slice(3), 'index.ts')
+    : path.join(__dirname, '..', '..', 'src', 'render', p, 'index.ts');
   const r = esbuild.buildSync({
-    entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', p, 'index.ts')],
+    entryPoints: [base],
     bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
     write: false, logLevel: 'silent',
   });
@@ -3452,6 +3507,86 @@ for (let i = 0; i < 10; i++) {
 eq('SC83.a plan input not mutated', JSON.stringify(_sc78Phases), _sc83PlanSnap);
 eq('SC83.b budget input not mutated', JSON.stringify(_sc80Budget), _sc83BudgetSnap);
 eq('SC83.c catalogue input not mutated', JSON.stringify(_sc82Tracks), _sc83CatalogueSnap);
+
+// ===========================================================================
+// SCENARIO 84 — Calendar runtime: PURE preview math (TS-16)
+// ===========================================================================
+console.log('\n=== SCENARIO 84 — calendar runtime preview math (TS-16) ===');
+const _calR = _bundle('../features/calendar');
+// snapWeekMoveMins: 0 px below "7 AM start" → 7:00 = 420 min
+eq('SC84.a snap at relY=0 → 7:00', _calR.snapWeekMoveMins(0, 7, 56), 420);
+// Half an hour-cell → 7:30 = 450 min. 28 px (half of 56) → exactly 30 min above start
+eq('SC84.b snap at relY=28 → 7:30', _calR.snapWeekMoveMins(28, 7, 56), 450);
+// Far past max → clamps to 22:30 (= 23:00 - 30 min, our final allowed start)
+eq('SC84.c far below clamps to 22:30', _calR.snapWeekMoveMins(5000, 7, 56), 22 * 60 + 30);
+// Negative relY clamps to 7:00 (not below start)
+eq('SC84.d negative clamps to 7:00', _calR.snapWeekMoveMins(-100, 7, 56), 7 * 60);
+// snapWeekResizeDuration: drag down 14 px (15 min) from 60 min → 75 min
+eq('SC84.e resize +15 min snap', _calR.snapWeekResizeDuration(60, 14, 7 * 60, 56, 15), 75);
+// resize never goes below 15 min
+eq('SC84.f resize floor is 15 min', _calR.snapWeekResizeDuration(60, -1000, 7 * 60, 56, 15), 15);
+// resize never exceeds 23:59 from start (max from 22:00 → 119 min, snapped to 105 per 15-min grid)
+const _sc84MaxFrom22 = _calR.snapWeekResizeDuration(60, 100000, 22 * 60, 56, 15);
+tr('SC84.g resize cap below 24 h cap', _sc84MaxFrom22 <= (24 * 60 - 1) - (22 * 60));
+// movedPastThreshold
+tr('SC84.h dx=0 dy=0 NOT past threshold', !_calR.movedPastThreshold(0, 0));
+tr('SC84.i dx=5 IS past threshold', _calR.movedPastThreshold(5, 0));
+tr('SC84.j dy=5 IS past threshold', _calR.movedPastThreshold(0, 5));
+
+// ===========================================================================
+// SCENARIO 85 — Calendar runtime: drag state lifecycle (TS-16)
+// ===========================================================================
+console.log('\n=== SCENARIO 85 — calendar runtime drag state lifecycle (TS-16) ===');
+// At rest, no drag state is present.
+tr('SC85.a no week drag at rest', _calR._getWeekDragState() === null);
+tr('SC85.b no week resize at rest', _calR._getWeekResizeState() === null);
+tr('SC85.c no month drag at rest', _calR._getMonthDragState() === null);
+tr('SC85.d month drag NOT started', _calR.isMonthDragStarted() === false);
+// Reset hooks are idempotent (no errors when state is already null).
+_calR._resetWeekDrag();
+_calR._resetWeekResize();
+_calR._resetMonthDrag();
+tr('SC85.e resets remain null', _calR._getWeekDragState() === null && _calR._getWeekResizeState() === null && _calR._getMonthDragState() === null);
+
+// ===========================================================================
+// SCENARIO 86 — Calendar runtime: DI registration is total (TS-16)
+// ===========================================================================
+console.log('\n=== SCENARIO 86 — calendar runtime DI registration (TS-16) ===');
+const _sc86Deps = {
+  findEvent: () => null,
+  stampEventUpdate: () => {},
+  save: () => {},
+  renderCalendar: () => {},
+  renderDashboard: () => {},
+  toast: () => {},
+  haptic: () => {},
+  openDetail: () => {},
+  openEventModal: () => {},
+};
+let _sc86Threw = false;
+try { _calR.registerCalendarRuntime(_sc86Deps); } catch (_e) { _sc86Threw = true; }
+tr('SC86.a registerCalendarRuntime accepts minimum deps', !_sc86Threw);
+// Re-registration is allowed (replacement, not append).
+let _sc86Threw2 = false;
+try { _calR.registerCalendarRuntime(_sc86Deps); } catch (_e) { _sc86Threw2 = true; }
+tr('SC86.b registerCalendarRuntime is re-callable', !_sc86Threw2);
+
+// ===========================================================================
+// SCENARIO 87 — Calendar runtime: snap math is deterministic (TS-16)
+// ===========================================================================
+console.log('\n=== SCENARIO 87 — snap math determinism (TS-16) ===');
+let _sc87Stable = true;
+const _sc87Ref = _calR.snapWeekMoveMins(123, 7, 56);
+for (let i = 0; i < 500; i++) {
+  if (_calR.snapWeekMoveMins(123, 7, 56) !== _sc87Ref) { _sc87Stable = false; break; }
+}
+tr('SC87.a 500 snap calls identical', _sc87Stable);
+const _sc87DurRef = _calR.snapWeekResizeDuration(60, 50, 8 * 60, 56, 15);
+let _sc87DurStable = true;
+for (let i = 0; i < 500; i++) {
+  if (_calR.snapWeekResizeDuration(60, 50, 8 * 60, 56, 15) !== _sc87DurRef) { _sc87DurStable = false; break; }
+}
+tr('SC87.b 500 resize calls identical', _sc87DurStable);
 
 // ---------------------------------------------------------------------------
 // SUMMARY
