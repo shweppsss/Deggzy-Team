@@ -454,6 +454,108 @@ type AudioBridgeWindow = {
   }
 }
 
+// TS-18 — audio + cover IDB cache layer.
+// Replaces ~280 inline lines (idbSave/Get/Delete{Audio,Cover}, getTrackAudioUrl,
+// getTrackCoverUrl, clearAudioCache, clearCoverCache, prewarmAudioCache,
+// hydrateAllAudios, hydrateAllCovers). Zero `window.X` inside /cache/.
+import {
+  registerAudioCache,
+  getTrackAudioUrl as cacheGetAudioUrl,
+  getTrackCoverUrl as cacheGetCoverUrl,
+  peekTrackAudioUrl as cachePeekAudioUrl,
+  peekTrackCoverUrl as cachePeekCoverUrl,
+  clearAudioCache as cacheClearAudio,
+  clearCoverCache as cacheClearCover,
+  prewarmAudioCache as cachePrewarm,
+  hydrateAllAudios as cacheHydrateAudios,
+  hydrateAllCovers as cacheHydrateCovers,
+  idbSaveAudio as cacheIdbSaveAudio,
+  idbGetAudio as cacheIdbGetAudio,
+  idbDeleteAudio as cacheIdbDeleteAudio,
+  idbSaveCover as cacheIdbSaveCover,
+  idbGetCover as cacheIdbGetCover,
+  idbDeleteCover as cacheIdbDeleteCover,
+  type CachedTrack as _CachedTrack,
+} from './features/audio/cache';
+
+type AudioCacheLegacyGlobals = {
+  state?: { tracks?: _CachedTrack[] };
+  sbDownloadBlob?: (bucket: string, path: string) => Promise<Blob | null>;
+  SB_BUCKET_AUDIO?: string;
+  SB_BUCKET_COVERS?: string;
+  formatBytes?: (n: number) => string;
+  _formatAudioTime?: (s: number) => string;
+  trackAudioInitialHTML?: (t: { id: string }) => string;
+};
+
+registerAudioCache({
+  getTracks: () => {
+    const w = window as unknown as AudioCacheLegacyGlobals;
+    return (w.state && Array.isArray(w.state.tracks) ? w.state.tracks : []) as readonly _CachedTrack[];
+  },
+  get audioBucket() {
+    return (window as unknown as AudioCacheLegacyGlobals).SB_BUCKET_AUDIO || 'audio';
+  },
+  get coverBucket() {
+    return (window as unknown as AudioCacheLegacyGlobals).SB_BUCKET_COVERS || 'covers';
+  },
+  sbDownloadBlob: async (bucket, path) => {
+    const w = window as unknown as AudioCacheLegacyGlobals;
+    if (typeof w.sbDownloadBlob !== 'function') return null;
+    return w.sbDownloadBlob(bucket, path);
+  },
+  formatBytes: (n) => {
+    const w = window as unknown as AudioCacheLegacyGlobals;
+    return typeof w.formatBytes === 'function' ? w.formatBytes(n) : String(n);
+  },
+  formatAudioTime: (s) => {
+    const w = window as unknown as AudioCacheLegacyGlobals;
+    return typeof w._formatAudioTime === 'function' ? w._formatAudioTime(s) : String(s);
+  },
+  trackAudioInitialHTML: (t) => {
+    const w = window as unknown as AudioCacheLegacyGlobals;
+    return typeof w.trackAudioInitialHTML === 'function' ? w.trackAudioInitialHTML(t) : '';
+  },
+  getActiveTrackId: () => audioGetAudioState().trackId,
+});
+
+// Re-attach cache functions on window for legacy inline call sites.
+type CacheWindow = {
+  getTrackAudioUrl?: typeof cacheGetAudioUrl;
+  getTrackCoverUrl?: typeof cacheGetCoverUrl;
+  peekTrackAudioUrl?: typeof cachePeekAudioUrl;
+  peekTrackCoverUrl?: typeof cachePeekCoverUrl;
+  clearAudioCache?: typeof cacheClearAudio;
+  clearCoverCache?: typeof cacheClearCover;
+  prewarmAudioCache?: typeof cachePrewarm;
+  hydrateAllAudios?: typeof cacheHydrateAudios;
+  hydrateAllCovers?: typeof cacheHydrateCovers;
+  idbSaveAudio?: typeof cacheIdbSaveAudio;
+  idbGetAudio?: typeof cacheIdbGetAudio;
+  idbDeleteAudio?: typeof cacheIdbDeleteAudio;
+  idbSaveCover?: typeof cacheIdbSaveCover;
+  idbGetCover?: typeof cacheIdbGetCover;
+  idbDeleteCover?: typeof cacheIdbDeleteCover;
+};
+{
+  const cw = window as unknown as CacheWindow;
+  cw.getTrackAudioUrl = cacheGetAudioUrl;
+  cw.getTrackCoverUrl = cacheGetCoverUrl;
+  cw.peekTrackAudioUrl = cachePeekAudioUrl;
+  cw.peekTrackCoverUrl = cachePeekCoverUrl;
+  cw.clearAudioCache = cacheClearAudio;
+  cw.clearCoverCache = cacheClearCover;
+  cw.prewarmAudioCache = cachePrewarm;
+  cw.hydrateAllAudios = cacheHydrateAudios;
+  cw.hydrateAllCovers = cacheHydrateCovers;
+  cw.idbSaveAudio = cacheIdbSaveAudio;
+  cw.idbGetAudio = cacheIdbGetAudio;
+  cw.idbDeleteAudio = cacheIdbDeleteAudio;
+  cw.idbSaveCover = cacheIdbSaveCover;
+  cw.idbGetCover = cacheIdbGetCover;
+  cw.idbDeleteCover = cacheIdbDeleteCover;
+}
+
 // Detail overlay lifecycle — historically inline `function openDetail()`,
 // `function closeDetail()`, `function bindDetailClose()` declared at
 // module scope. Re-attached on `window` to keep the legacy inline call

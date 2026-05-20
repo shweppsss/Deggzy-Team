@@ -7729,13 +7729,24 @@ function migrateLegacyData() {
 migrateLegacyData();
 
 /* ============================
-   INDEXEDDB — Audio storage (WAV, MP3, FLAC...)
+   INDEXEDDB — Audio + cover blobs.
+   EXTRACTED in Phase TS-18 to /src/features/audio/cache/{idb,urls,cleanup}.ts.
+   The TS module owns:
+     - openIDB() / idbSaveAudio / idbGetAudio / idbDeleteAudio
+     - idbSaveCover / idbGetCover / idbDeleteCover
+     - getTrackAudioUrl / getTrackCoverUrl (with in-flight dedupe)
+     - clearAudioCache / clearCoverCache (revoke blob URLs)
+   They are re-attached on `window` by /src/main.ts so legacy inline call
+   sites (track CRUD, hydrate, playTrackInMini) keep working unchanged.
+   Inline code still owns the inspiration IDB key namespace below.
    ============================ */
 const IDB_NAME = 'degzzy_media_v1';
 const IDB_STORE = 'audio';
 let _idbPromise = null;
 
 function openIDB() {
+  // Re-export the TS-managed promise when available; fall back to a fresh
+  // open() for inline code paths that run before main.ts boots (rare).
   if (_idbPromise) return _idbPromise;
   _idbPromise = new Promise((resolve, reject) => {
     if (!('indexedDB' in window)) { reject(new Error('IndexedDB non supporté')); return; }
@@ -7750,128 +7761,13 @@ function openIDB() {
   return _idbPromise;
 }
 
-async function idbSaveAudio(key, file) {
-  const db = await openIDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, 'readwrite');
-    tx.objectStore(IDB_STORE).put({ blob: file, name: file.name, type: file.type, size: file.size, savedAt: Date.now() }, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-async function idbGetAudio(key) {
-  const db = await openIDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, 'readonly');
-    const req = tx.objectStore(IDB_STORE).get(key);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
-  });
-}
-async function idbDeleteAudio(key) {
-  const db = await openIDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, 'readwrite');
-    tx.objectStore(IDB_STORE).delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-// In-memory cache: trackId -> { url, name, type, size }
+// In-memory caches kept here ONLY as a transitional read-through for any
+// inline path that referenced `_audioCache[id]` / `_coverCache[id]` directly.
+// playTrackInMini below has been updated to go through window.peekTrackAudioUrl /
+// window.peekTrackCoverUrl. These two locals stay as empty stubs to avoid
+// reference errors during the few-line window between parse and main.ts boot.
 const _audioCache = {};
-async function getTrackAudioUrl(trackId) {
-  if (_audioCache[trackId]) return _audioCache[trackId];
-  try {
-    const data = await idbGetAudio('track_' + trackId);
-    if (data && data.blob) {
-      const url = URL.createObjectURL(data.blob);
-      _audioCache[trackId] = { url, name: data.name, type: data.type, size: data.size };
-      return _audioCache[trackId];
-    }
-  } catch (e) { console.warn('idbGetAudio failed:', e); }
-  // Fallback: Supabase Storage (source of truth across devices)
-  try {
-    const track = (state.tracks || []).find(x => x.id === trackId);
-    if (track && track.sbAudioPath) {
-      const blob = await sbDownloadBlob(SB_BUCKET_AUDIO, track.sbAudioPath);
-      if (blob) {
-        try { await idbSaveAudio('track_' + trackId, new File([blob], (track.audioMeta && track.audioMeta.name) || 'audio', { type: blob.type })); } catch (e) {}
-        const url = URL.createObjectURL(blob);
-        _audioCache[trackId] = { url, name: (track.audioMeta && track.audioMeta.name) || 'audio', type: blob.type, size: blob.size };
-        return _audioCache[trackId];
-      }
-    }
-  } catch (e) { console.warn('cloud download audio failed:', e); }
-  return null;
-}
-function clearAudioCache(trackId) {
-  if (_audioCache[trackId]) {
-    URL.revokeObjectURL(_audioCache[trackId].url);
-    delete _audioCache[trackId];
-  }
-}
-
-/* COVERS in IndexedDB — to free localStorage from base64 images */
 const _coverCache = {};
-async function idbSaveCover(key, blob) {
-  const db = await openIDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, 'readwrite');
-    tx.objectStore(IDB_STORE).put({ blob, type: blob.type, size: blob.size, savedAt: Date.now() }, 'cover_' + key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-async function idbGetCover(key) {
-  const db = await openIDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, 'readonly');
-    const req = tx.objectStore(IDB_STORE).get('cover_' + key);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
-  });
-}
-async function idbDeleteCover(key) {
-  const db = await openIDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, 'readwrite');
-    tx.objectStore(IDB_STORE).delete('cover_' + key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-async function getTrackCoverUrl(trackId) {
-  if (_coverCache[trackId]) return _coverCache[trackId];
-  try {
-    const data = await idbGetCover(trackId);
-    if (data && data.blob) {
-      const url = URL.createObjectURL(data.blob);
-      _coverCache[trackId] = url;
-      return url;
-    }
-  } catch (e) { console.warn('idbGetCover failed:', e); }
-  // Fallback: Supabase Storage (source of truth across devices)
-  try {
-    const track = (state.tracks || []).find(x => x.id === trackId);
-    if (track && track.sbCoverPath) {
-      const blob = await sbDownloadBlob(SB_BUCKET_COVERS, track.sbCoverPath);
-      if (blob) {
-        try { await idbSaveCover(trackId, blob); } catch (e) {}
-        const url = URL.createObjectURL(blob);
-        _coverCache[trackId] = url;
-        return url;
-      }
-    }
-  } catch (e) { console.warn('cloud download cover failed:', e); }
-  return null;
-}
-function clearCoverCache(trackId) {
-  if (_coverCache[trackId]) {
-    URL.revokeObjectURL(_coverCache[trackId]);
-    delete _coverCache[trackId];
-  }
-}
 
 /* INSPIRATIONS in IndexedDB — to free localStorage from base64 images/videos.
    Mirrors the cover helpers above. Each inspiration blob is keyed by its insp.id. */
@@ -9910,16 +9806,13 @@ async function enterApp() {
 // playTrackInMini calls can resolve the URL synchronously. Idle-scheduled to
 // avoid competing with the boot render. Idempotent — cache hit returns
 // immediately from getTrackAudioUrl.
+// prewarmAudioCache — EXTRACTED in Phase TS-18 to /src/features/audio/cache/prewarm.ts.
+// Re-attached on window by main.ts; the legacy `if (typeof prewarmAudioCache === 'function')`
+// call site resolves through the global scope chain.
 function prewarmAudioCache() {
-  const tracks = (state.tracks || []).filter(t => t && (t.idbAudio || (t.audio && typeof t.audio === 'string' && t.audio.startsWith('data:'))));
-  if (!tracks.length) return;
-  const tick = () => {
-    for (const t of tracks) {
-      getTrackAudioUrl(t.id).catch(() => {});
-    }
-  };
-  if (typeof requestIdleCallback === 'function') requestIdleCallback(tick, { timeout: 2000 });
-  else setTimeout(tick, 600);
+  if (typeof window.prewarmAudioCache === 'function' && window.prewarmAudioCache !== prewarmAudioCache) {
+    return window.prewarmAudioCache();
+  }
 }
 
 function saveSetup(ev) {
@@ -11346,15 +11239,12 @@ function renderCatalogue() {
   if (typeof window.renderCatalogueTS === 'function') return window.renderCatalogueTS();
 }
 
+// hydrateAllCovers — EXTRACTED in Phase TS-18 to /src/features/audio/cache/hydrate.ts.
+// Re-attached on window by main.ts; the shim below delegates so inline
+// callers (catalogue mount, post-fetch sync) keep working.
 async function hydrateAllCovers() {
-  for (const t of state.tracks) {
-    if (t.idbCover && !t.cover) {
-      const url = await getTrackCoverUrl(t.id);
-      const el = document.querySelector(`.track-cover[data-cover-for="${t.id}"]`);
-      if (el && url) {
-        el.style.backgroundImage = `url('${url}')`;
-      }
-    }
+  if (typeof window.hydrateAllCovers === 'function' && window.hydrateAllCovers !== hydrateAllCovers) {
+    return window.hydrateAllCovers();
   }
 }
 
@@ -11468,31 +11358,11 @@ function _formatAudioTime(seconds) {
   return m + ':' + String(r).padStart(2, '0');
 }
 
+// hydrateAllAudios — EXTRACTED in Phase TS-18 to /src/features/audio/cache/hydrate.ts.
+// Re-attached on window by main.ts.
 async function hydrateAllAudios() {
-  for (const t of state.tracks) {
-    if (!t.idbAudio && !(t.audio && typeof t.audio === 'string' && t.audio.startsWith('data:'))) continue;
-    const data = await getTrackAudioUrl(t.id);
-    const slot = document.querySelector(`.track-audio-slot[data-track-id="${t.id}"]`);
-    if (!slot) continue;
-    if (!data) {
-      slot.innerHTML = trackAudioInitialHTML({ id: t.id });
-      continue;
-    }
-    const meta = slot.querySelector(`[data-meta-for="${t.id}"]`);
-    if (meta) meta.textContent = data.name + ' · ' + formatBytes(data.size);
-    // Duration probe for inactive tracks so the time label reflects the file
-    // before the user plays. The active track's time comes from _audioState
-    // via the subscriber — never overwrite that label here.
-    try {
-      const probe = new Audio();
-      probe.preload = 'metadata';
-      probe.src = data.url;
-      probe.addEventListener('loadedmetadata', () => {
-        if (_audioState.trackId === t.id) return; // active track — store owns the label
-        const pillTime = document.querySelector(`.track-audio[data-track-id="${t.id}"] .track-audio-time`);
-        if (pillTime) pillTime.textContent = _formatAudioTime(probe.duration);
-      }, { once: true });
-    } catch (e) {}
+  if (typeof window.hydrateAllAudios === 'function' && window.hydrateAllAudios !== hydrateAllAudios) {
+    return window.hydrateAllAudios();
   }
 }
 
@@ -11511,9 +11381,11 @@ function playTrackInMini(trackId) {
   }
   const track = (state.tracks || []).find(t => t.id === trackId);
   if (!track) return;
-  const cached = _audioCache[trackId];
+  // TS-18 — synchronous cache peek goes through the TS module's in-memory store.
+  // Falls back to the async resolve path on miss.
+  const cached = typeof window.peekTrackAudioUrl === 'function' ? window.peekTrackAudioUrl(trackId) : null;
   if (cached && cached.url) {
-    const coverUrl = _coverCache[trackId] || null;
+    const coverUrl = typeof window.peekTrackCoverUrl === 'function' ? window.peekTrackCoverUrl(trackId) : null;
     MiniPlayer.show(track, cached.url, coverUrl);
     if (!coverUrl) {
       getTrackCoverUrl(trackId).then(u => {

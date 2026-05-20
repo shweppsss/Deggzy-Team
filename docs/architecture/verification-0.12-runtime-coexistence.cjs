@@ -3708,8 +3708,213 @@ _audioR.setAudioState({ trackId: 'x', duration: 100 });
 _audioR.setAudioState({ duration: undefined });
 tr('SC93.b undefined-valued field is skipped', _audioR.getAudioState().duration === 100);
 
+// ===========================================================================
+// TS-18 — AUDIO CACHE / IDB SCENARIOS (SC94..SC99)
+// ===========================================================================
+//
+// The cache module is bundled in isolation. We mock URL.createObjectURL /
+// revokeObjectURL to track blob URL lifecycle, and mock indexedDB just
+// enough that openIDB() resolves to a usable object-store API.
 // ---------------------------------------------------------------------------
-// SUMMARY
+function _bundleFeatureDir(p) {
+  const r = esbuild.buildSync({
+    entryPoints: [path.join(__dirname, '..', '..', 'src', 'features', p, 'index.ts')],
+    bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+    write: false, logLevel: 'silent',
+  });
+  const m = { exports: {} };
+  (function (module, exports, require) { eval(r.outputFiles[0].text); })(m, m.exports, require);
+  return m.exports;
+}
+
+// --- Blob URL lifecycle mock ----------------------------------------------
+const _blobUrls = new Set();
+let _blobUrlSeq = 0;
+global.URL = global.URL || {};
+global.URL.createObjectURL = (blob) => {
+  const id = 'blob:degzzy/' + (++_blobUrlSeq);
+  _blobUrls.add(id);
+  return id;
+};
+global.URL.revokeObjectURL = (url) => {
+  _blobUrls.delete(url);
+};
+
+// --- IndexedDB mock --------------------------------------------------------
+// Behavior: openIDB resolves, transactions complete asynchronously, and the
+// object store keeps an in-memory map keyed by trackId. Adequate for SC94-99
+// invariants. NOTE: the harness overrides setTimeout to be synchronous
+// (line ~186), so we use queueMicrotask to defer until after the current
+// synchronous code completes (which is when the TS module assigns
+// req.onsuccess / tx.oncomplete handlers).
+const _idbStores = { audio: new Map() };
+function _makeMockIDB() {
+  function mockStore(name) {
+    const m = _idbStores[name];
+    return {
+      put(value, key) {
+        const req = {};
+        queueMicrotask(() => { m.set(key, value); req.onsuccess && req.onsuccess({ target: req }); });
+        return req;
+      },
+      get(key) {
+        const req = {};
+        queueMicrotask(() => { req.result = m.has(key) ? m.get(key) : undefined; req.onsuccess && req.onsuccess({ target: req }); });
+        return req;
+      },
+      delete(key) {
+        const req = {};
+        queueMicrotask(() => { m.delete(key); req.onsuccess && req.onsuccess({ target: req }); });
+        return req;
+      },
+    };
+  }
+  function mockTx(name, _mode) {
+    const store = mockStore(name);
+    const tx = {};
+    // Resolve oncomplete AFTER the inner put/get/delete microtasks fire, by
+    // scheduling our microtask AFTER them. Easy way: chain through a resolved
+    // promise so this fires in a later microtask tick.
+    Promise.resolve().then(() => Promise.resolve()).then(() => { tx.oncomplete && tx.oncomplete(); });
+    tx.objectStore = () => store;
+    return tx;
+  }
+  return {
+    objectStoreNames: { contains: (s) => s === 'audio' },
+    createObjectStore: () => ({}),
+    transaction: (n, m) => mockTx(n, m),
+  };
+}
+global.indexedDB = {
+  open() {
+    const req = {};
+    queueMicrotask(() => {
+      req.result = _makeMockIDB();
+      if (req.onsuccess) req.onsuccess({ target: req });
+    });
+    return req;
+  },
+};
+
+const _cacheR = _bundleFeatureDir('audio/cache');
+
+// Helper: harness deps (no Supabase, no DOM beyond what /document mock provides).
+function _makeCacheDeps(tracks, sbBlob) {
+  return {
+    getTracks: () => tracks,
+    audioBucket: 'audio',
+    coverBucket: 'covers',
+    sbDownloadBlob: async () => sbBlob,
+    formatBytes: (n) => String(n) + ' B',
+    formatAudioTime: (s) => String(s),
+    trackAudioInitialHTML: () => '<empty>',
+    getActiveTrackId: () => null,
+  };
+}
+
+// The TS-18 scenarios are all async (IDB transactions). The outer IIFE
+// awaits the whole TS-18 block before hitting the summary/exit so the
+// final pass/fail count includes SC94..SC99.
+await (async () => {
+  // SCENARIO 94 — Blob URL leak prevention
+  console.log('\n=== SCENARIO 94 — blob URL leak prevention (TS-18) ===');
+  _cacheR._resetIdbPromise();
+  _cacheR._resetUrlCaches();
+  _blobUrls.clear();
+  _cacheR.registerAudioCache(_makeCacheDeps([], null));
+  for (let i = 0; i < 100; i++) {
+    await _cacheR.idbSaveAudio('track_t' + i, { name: 'a' + i, type: 'audio/wav', size: 1 });
+  }
+  for (let i = 0; i < 100; i++) await _cacheR.getTrackAudioUrl('t' + i);
+  tr('SC94.a 100 createObjectURLs are tracked', _blobUrls.size === 100);
+  for (let i = 0; i < 100; i++) _cacheR.clearAudioCache('t' + i);
+  tr('SC94.b after clearAudioCache × 100 → 0 dangling refs', _blobUrls.size === 0);
+  const fresh = await _cacheR.getTrackAudioUrl('t0');
+  tr('SC94.c re-fetch after clear yields a fresh url', !!fresh && _blobUrls.has(fresh.url));
+  _cacheR.clearAudioCache('t0');
+  tr('SC94.d final cleanup → 0 dangling', _blobUrls.size === 0);
+
+  // SCENARIO 95 — IDB rollback safety
+  console.log('\n=== SCENARIO 95 — IDB rollback safety (TS-18) ===');
+  _cacheR._resetIdbPromise();
+  _cacheR._resetUrlCaches();
+  _blobUrls.clear();
+  _cacheR.registerAudioCache({
+    ..._makeCacheDeps([{ id: 'tA', sbAudioPath: 'audio/tA.wav' }], null),
+    sbDownloadBlob: async () => { throw new Error('boom'); },
+  });
+  const sc95Res = await _cacheR.getTrackAudioUrl('tA');
+  tr('SC95.a IDB-miss + cloud-throw → null result, no throw', sc95Res === null);
+  tr('SC95.b no blob URL leaked on failure', _blobUrls.size === 0);
+  tr('SC95.c audio cache empty after failure', !_cacheR.peekTrackAudioUrl('tA'));
+
+  // SCENARIO 96 — Cache resolution determinism
+  console.log('\n=== SCENARIO 96 — cache resolution determinism (TS-18) ===');
+  _cacheR._resetIdbPromise();
+  _cacheR._resetUrlCaches();
+  _blobUrls.clear();
+  _cacheR.registerAudioCache(_makeCacheDeps([], null));
+  await _cacheR.idbSaveAudio('track_tDet', { name: 'd', type: 'audio/wav', size: 1 });
+  const sc96First = await _cacheR.getTrackAudioUrl('tDet');
+  const sc96Second = await _cacheR.getTrackAudioUrl('tDet');
+  tr('SC96.a 2nd resolve returns the SAME cached entry (no duplicate URL)', sc96First === sc96Second);
+  tr('SC96.b exactly one live blob URL after 2 resolves', _blobUrls.size === 1);
+
+  // SCENARIO 97 — Concurrent fetch dedupe
+  console.log('\n=== SCENARIO 97 — concurrent fetch dedupe (TS-18) ===');
+  _cacheR._resetIdbPromise();
+  _cacheR._resetUrlCaches();
+  _blobUrls.clear();
+  let sc97DownloadCount = 0;
+  _cacheR.registerAudioCache({
+    ..._makeCacheDeps([{ id: 'tDed', sbAudioPath: 'audio/tDed.wav' }], { type: 'audio/wav', size: 1 }),
+    sbDownloadBlob: async () => {
+      sc97DownloadCount++;
+      await new Promise((r) => setTimeout(r, 5));
+      return { type: 'audio/wav', size: 1 };
+    },
+  });
+  const sc97Promises = [];
+  for (let i = 0; i < 10; i++) sc97Promises.push(_cacheR.getTrackAudioUrl('tDed'));
+  const sc97Results = await Promise.all(sc97Promises);
+  const sc97AllSame = sc97Results.every((r) => r && r.url === sc97Results[0].url);
+  tr('SC97.a 10 concurrent calls → 1 cloud download', sc97DownloadCount === 1);
+  tr('SC97.b 10 concurrent calls → all share the same url', sc97AllSame);
+  tr('SC97.c 1 blob URL created (not 10)', _blobUrls.size === 1);
+
+  // SCENARIO 98 — clearTrackCache symmetry
+  console.log('\n=== SCENARIO 98 — clearTrackCache symmetry (TS-18) ===');
+  _cacheR._resetIdbPromise();
+  _cacheR._resetUrlCaches();
+  _blobUrls.clear();
+  _cacheR.registerAudioCache(_makeCacheDeps([], null));
+  await _cacheR.idbSaveAudio('track_tCoh', { name: 'c', type: 'audio/wav', size: 1 });
+  await _cacheR.idbSaveCover('tCoh', { type: 'image/png', size: 1 });
+  await _cacheR.getTrackAudioUrl('tCoh');
+  await _cacheR.getTrackCoverUrl('tCoh');
+  tr('SC98.a both blob URLs live before clear', _blobUrls.size === 2);
+  _cacheR.clearTrackCache('tCoh');
+  tr('SC98.b clearTrackCache revokes BOTH blob URLs', _blobUrls.size === 0);
+  tr('SC98.c audio peek returns null after clear', !_cacheR.peekTrackAudioUrl('tCoh'));
+  tr('SC98.d cover peek returns null after clear', !_cacheR.peekTrackCoverUrl('tCoh'));
+
+  // SCENARIO 99 — Offline fallback (IDB hit + Supabase down → still works)
+  console.log('\n=== SCENARIO 99 — offline fallback (TS-18) ===');
+  _cacheR._resetIdbPromise();
+  _cacheR._resetUrlCaches();
+  _blobUrls.clear();
+  _cacheR.registerAudioCache({
+    ..._makeCacheDeps([{ id: 'tOff', sbAudioPath: 'audio/tOff.wav' }], null),
+    sbDownloadBlob: async () => { throw new Error('offline'); },
+  });
+  await _cacheR.idbSaveAudio('track_tOff', { name: 'o', type: 'audio/wav', size: 1 });
+  const sc99Res = await _cacheR.getTrackAudioUrl('tOff');
+  tr('SC99.a IDB hit serves audio even when Supabase is unreachable', !!sc99Res && !!sc99Res.url);
+  tr('SC99.b no unhandled throw during resolution', true);
+})();
+
+// ---------------------------------------------------------------------------
+// SUMMARY — runs AFTER the TS-18 await block above completes.
 // ---------------------------------------------------------------------------
 console.log('\n=== SUMMARY ===');
 console.log('Pass: ' + pass + '\nFail: ' + fail);
