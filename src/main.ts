@@ -1109,6 +1109,49 @@ type RealtimeWindow = {
   rw.getOnlineCount = rtOnlineCount;
 }
 
+// MOBILE-1: centralized haptics + visibility + audio-continuity. The
+// inline haptic(ms) shim still works (it's a thin navigator.vibrate
+// wrapper); this module names patterns + respects reduced-motion + wires
+// background→foreground audio resume through the TS-19 player.
+import {
+  registerMobile,
+  haptic as mobileHaptic,
+  hapticMs as mobileHapticMs,
+  areHapticsEnabled as mobileHapticsEnabled,
+  setHapticsEnabled as mobileSetHapticsEnabled,
+  viewTransition as mobileViewTransition,
+  getVisibilityState as mobileGetVisibility,
+  subscribeVisibility as mobileSubscribeVisibility,
+  type HapticPattern,
+} from './features/mobile';
+
+registerMobile({
+  audioContinuity: {
+    isPlaying: () => audioGetAudioState().isPlaying,
+    resume: () => playerResume(),
+  },
+});
+
+type MobileWindow = {
+  hapticPattern?: (pattern: HapticPattern) => void;
+  hapticMs?: typeof mobileHapticMs;
+  hapticsEnabled?: typeof mobileHapticsEnabled;
+  setHapticsEnabled?: typeof mobileSetHapticsEnabled;
+  viewTransition?: typeof mobileViewTransition;
+  getVisibilityState?: typeof mobileGetVisibility;
+  subscribeVisibility?: typeof mobileSubscribeVisibility;
+};
+{
+  const mw = window as unknown as MobileWindow;
+  mw.hapticPattern = mobileHaptic;
+  mw.hapticMs = mobileHapticMs;
+  mw.hapticsEnabled = mobileHapticsEnabled;
+  mw.setHapticsEnabled = mobileSetHapticsEnabled;
+  mw.viewTransition = mobileViewTransition;
+  mw.getVisibilityState = mobileGetVisibility;
+  mw.subscribeVisibility = mobileSubscribeVisibility;
+}
+
 // Window mirrors — legacy inline still uses these names.
 window.loadWorkspaceFromCloud = loadWorkspace;
 window.deepMerge = deepMergeWorkspace as typeof window.deepMerge;
