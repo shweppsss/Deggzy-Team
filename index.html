@@ -10541,8 +10541,24 @@ function fileToDataUrl(file) {
    ============================ */
 const PROJECT_DATE = new Date('2026-09-11');
 
+// renderDashboard — EXTRACTED in Phase TS-14A to /src/render/dashboard/.
+// The TS path:
+//   - composition.ts builds a DashboardViewResult from the model
+//   - widgets/*.ts compose each section's HTML (pure)
+//   - mount.ts applies the result to the pre-rendered shell
+// main.ts injects the legacy helpers (filterVisibleEvents,
+// isTodoOnDashboard, PHASES, ROLE_BY_KEY, computePhase,
+// getCurrentRoleKey, animateCounter, attachSwipeDelete, etc.) via
+// the dashboard module's registered hooks.
+//
+// The body below was the old inline implementation; kept commented
+// only as a reference of the variables that are now in DashboardModel.
 function renderDashboard() {
-  // Cache DOM refs once — avoid 7+ getElementById calls per render.
+  if (typeof window.renderDashboardTS === 'function') return window.renderDashboardTS();
+}
+// Legacy implementation (commented out — kept for review during TS-14A only):
+/*
+function _renderDashboardLegacy_DO_NOT_USE() {
   const dash = {
     greetingName: document.getElementById('dashGreetingName'),
     greetingAlias: document.getElementById('dashGreetingAlias'),
@@ -10836,100 +10852,11 @@ function renderDashboard() {
     if (m) attachSwipeDelete(el, () => swipeDeleteEvent(m[1]));
   });
 }
-
-/* RELEASE COUNTDOWN — sub-renderer for the hero "Prochaine sortie" card.
-   Pure function on top of state.events: takes the next release event + today,
-   computes days remaining, picks an urgency state, then writes into
-   #dashboardRelease. Hidden entirely when no upcoming release exists (caller
-   passes nextRelease=null). */
-function _releaseState(daysLeft) {
-  // Order matters — first match wins.
-  if (daysLeft <= 0)  return 'today';
-  if (daysLeft <= 2)  return 'urgent';
-  if (daysLeft <= 6)  return 'imminent';
-  if (daysLeft <= 14) return 'near';
-  if (daysLeft <= 30) return 'approaching';
-  return 'upcoming';
-}
-function _releaseMicrocopy(daysLeft) {
-  if (daysLeft <= 0) return 'Release day';
-  if (daysLeft === 1) return 'Demain';
-  if (daysLeft === 2) return 'Après-demain';
-  if (daysLeft <= 6)  return 'Imminent';
-  if (daysLeft <= 14) return 'Avant lancement';
-  return 'À venir';
-}
-function _releaseTitle(ev) {
-  if (!ev || !ev.title) return '';
-  return ev.title.replace(/^SORTIE\s*[—–-]?\s*/i, '').trim() || ev.title;
-}
-function _formatReleaseDate(iso) {
-  const d = _parseIso(iso);
-  if (!d || isNaN(d.getTime())) return iso;
-  // "mercredi 17 juin 2026"
-  return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-}
-function renderReleaseCountdown(nextRelease, today) {
-  const el = document.getElementById('dashboardRelease');
-  if (!el) return;
-  if (!nextRelease) {
-    // Hide the section entirely — keeps the dashboard calm when nothing's planned.
-    el.hidden = true;
-    el.innerHTML = '';
-    el.onclick = null;
-    return;
-  }
-  // Diff in WHOLE days, anchored to local midnight to avoid drift.
-  const release = _parseIso(nextRelease.date);
-  if (!release || isNaN(release.getTime())) {
-    el.hidden = true;
-    return;
-  }
-  const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  const releaseMidnight = new Date(release.getFullYear(), release.getMonth(), release.getDate());
-  const daysLeft = Math.round((releaseMidnight - todayMidnight) / (1000 * 60 * 60 * 24));
-
-  const stateKey = _releaseState(daysLeft);
-  const microcopy = _releaseMicrocopy(daysLeft);
-  const title    = _releaseTitle(nextRelease);
-  const dateLong = _formatReleaseDate(nextRelease.date);
-
-  // J-X label: J the day itself, J-X otherwise. Negative wouldn't render
-  // because nextRelease only contains future-or-today events, but guard anyway.
-  const jLabel = daysLeft <= 0 ? 'J' : 'J-' + daysLeft;
-  const jSub   = daysLeft <= 0
-    ? 'Aujourd\'hui'
-    : (daysLeft === 1 ? 'jour avant lancement' : 'jours avant lancement');
-
-  el.hidden = false;
-  el.dataset.state = stateKey;
-  el.setAttribute('role', 'button');
-  el.setAttribute('tabindex', '0');
-  el.setAttribute('aria-label', 'Prochaine sortie : ' + title + ', ' + jLabel + ', ' + dateLong);
-  el.innerHTML = `
-    <div class="dash-release-countdown">
-      <div class="dash-release-eyebrow">
-        <span class="dash-release-dot" aria-hidden="true"></span>
-        Prochaine sortie
-      </div>
-      <div class="dash-release-jminus">${escapeHtml(jLabel)}</div>
-      <div class="dash-release-jlabel">${escapeHtml(jSub)}</div>
-    </div>
-    <div class="dash-release-meta">
-      <div class="dash-release-title">${escapeHtml(title)}</div>
-      <div class="dash-release-date">${escapeHtml(dateLong)}</div>
-      <span class="dash-release-badge">${escapeHtml(microcopy)}</span>
-    </div>
-  `;
-  el.onclick = () => openDetail('event', nextRelease.id);
-  el.onkeydown = (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      openDetail('event', nextRelease.id);
-    }
-  };
-}
-
+*/
+// _releaseState / _releaseMicrocopy / _releaseTitle / _formatReleaseDate /
+// renderReleaseCountdown — EXTRACTED in Phase TS-14A to
+// /src/render/dashboard/calculations.ts + /src/render/dashboard/widgets/release.ts.
+// The release card is now part of the dashboard composition pipeline.
 /* Animated counter */
 function animateCounter(el, target) {
   const start = parseInt(el.textContent, 10) || 0;

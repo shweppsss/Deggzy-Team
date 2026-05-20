@@ -22,7 +22,8 @@ export {
   _flushRenderQueue,
 } from './dispatch';
 
-export { DASHBOARD_SECTION } from './dashboard';
+// TS-14A — dashboard moves to its own sub-module. Section id inline here.
+export const DASHBOARD_SECTION = 'dashboard' as const;
 export { TODOS_SECTION } from './todos';
 // TS-13C — calendar is now a sub-module with its own render code. The
 // SECTION_ID constant is co-located inside ./calendar/index.ts.

@@ -2753,6 +2753,163 @@ const _sc53AfterConflicts = _cal.detectEventConflicts(_sc53Events);
 tr('SC53.f after rollback: conflict re-appears', _sc53AfterConflicts.size === 2);
 tr('SC53.g state recovered: duration === 60', _sc53Original.duration === 60);
 
+// ===========================================================================
+// TS-14A — DASHBOARD RENDER SCENARIOS (SC54..SC58)
+// ===========================================================================
+const dashBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', 'dashboard', 'index.ts')],
+  bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+  write: false, logLevel: 'silent',
+});
+const _dashMod = { exports: {} };
+(function (module, exports, require) { eval(dashBundle.outputFiles[0].text); })(_dashMod, _dashMod.exports, require);
+const _dash = _dashMod.exports;
+
+const _dashDepsStub = {
+  filterVisibleEvents: (events) => events,
+  isTodoOnDashboard: () => true,
+  todoPriority: (t) => (t && (t.priority || (t.urgent ? 'urgent' : 'normal'))) || 'normal',
+  formatDate: (s) => s || '',
+  formatEventTime: (s) => (s ? s.slice(0, 5) : ''),
+  typeLabel: (t) => t || '',
+  escapeHtml: (s) => String(s == null ? '' : s),
+  icon: () => '',
+  emptyState: (kind, title) => `<div class="empty">${title}</div>`,
+  isFutureOrToday: (s) => !!s && s >= '2026-05-20',
+  parseDate: (s) => s ? new Date(s) : null,
+};
+
+const _dashModel = {
+  events: [
+    { id: 'e1', title: 'Studio', date: '2026-05-21', time: '10:00', type: 'studio' },
+    { id: 'e2', title: 'Release X', date: '2026-06-01', time: '12:00', type: 'release' },
+    { id: 'e3', title: 'Old', date: '2026-05-10', time: '14:00', type: 'meeting' },
+  ],
+  todos: [
+    { id: 't1', text: 'Task 1', priority: 'critique', done: false },
+    { id: 't2', text: 'Task 2', priority: 'urgent', done: false },
+    { id: 't3', text: 'Task 3', priority: 'normal', done: false },
+    { id: 't4', text: 'Done',   priority: 'critique', done: true },
+  ],
+  profile: { name: 'Alice', alias: 'A.', role: 'Artiste' },
+  user: { id: 'u1', email: 'a@test' },
+  roleKey: 'artiste',
+  today: new Date('2026-05-20T12:00:00'),
+  projectDate: new Date('2026-09-11'),
+  phases: [{ label: 'P0', title: 'Phase 0' }, { label: 'P1', title: 'Phase 1' }],
+  phaseIdx: 0,
+  phase: { label: 'P0', title: 'Phase 0' },
+  role: { key: 'artiste', label: 'Artiste' },
+};
+
+// ===========================================================================
+// SCENARIO 54 — Dashboard rerender idempotence (TS-14A)
+// ===========================================================================
+console.log('\n=== SCENARIO 54 — dashboard rerender idempotence (TS-14A) ===');
+const _sc54First = _dash.buildDashboardView(_dashModel, _dashDepsStub);
+let _sc54AllSame = true;
+for (let i = 0; i < 100; i++) {
+  const r = _dash.buildDashboardView(_dashModel, _dashDepsStub);
+  if (JSON.stringify(r) !== JSON.stringify(_sc54First)) { _sc54AllSame = false; break; }
+}
+tr('SC54.a 100 dashboard renders → identical structured result', _sc54AllSame);
+eq('SC54.b heroCount stable', _sc54First.heroCount, _dash.buildDashboardView(_dashModel, _dashDepsStub).heroCount);
+// Count parent <div class="dash-urgent-item" only (the children have suffixed
+// class names like dash-urgent-item-text / -meta).
+eq('SC54.c urgent count stable (2 items expected)', (_sc54First.urgentHtml.match(/class="dash-urgent-item"/g) || []).length, 2);
+
+// ===========================================================================
+// SCENARIO 55 — Widget ordering determinism (TS-14A)
+// ===========================================================================
+console.log('\n=== SCENARIO 55 — widget ordering determinism (TS-14A) ===');
+const _sc55Shuffled = {
+  ..._dashModel,
+  events: [_dashModel.events[2], _dashModel.events[0], _dashModel.events[1]],
+  todos: [_dashModel.todos[3], _dashModel.todos[2], _dashModel.todos[1], _dashModel.todos[0]],
+};
+const _sc55Result = _dash.buildDashboardView(_sc55Shuffled, _dashDepsStub);
+eq('SC55.a shuffled inputs → identical upcomingHtml', _sc54First.upcomingHtml, _sc55Result.upcomingHtml);
+eq('SC55.b shuffled inputs → identical todayHtml', _sc54First.todayHtml, _sc55Result.todayHtml);
+eq('SC55.c shuffled inputs → identical urgentHtml (priority sort)', _sc54First.urgentHtml, _sc55Result.urgentHtml);
+
+// ===========================================================================
+// SCENARIO 56 — Empty-state stability (TS-14A)
+// ===========================================================================
+console.log('\n=== SCENARIO 56 — empty-state stability (TS-14A) ===');
+const _sc56Empty = {
+  ..._dashModel,
+  events: [],
+  todos: [],
+};
+const _sc56Result = _dash.buildDashboardView(_sc56Empty, _dashDepsStub);
+tr('SC56.a empty events → upcoming flagged empty', _sc56Result.upcomingEmpty === true);
+tr('SC56.b empty events → upcoming empty-state HTML produced', _sc56Result.upcomingEmptyHtml.length > 0);
+tr('SC56.c empty events → today meta says "rien de prévu"', _sc56Result.todayMeta === 'rien de prévu');
+tr('SC56.d empty todos → urgent hidden', _sc56Result.urgentHidden === true);
+tr('SC56.e empty events → release hidden', _sc56Result.releaseHidden === true);
+
+// 50 reruns on empty inputs — same output every time
+let _sc56Stable = true;
+for (let i = 0; i < 50; i++) {
+  const r = _dash.buildDashboardView(_sc56Empty, _dashDepsStub);
+  if (JSON.stringify(r) !== JSON.stringify(_sc56Result)) { _sc56Stable = false; break; }
+}
+tr('SC56.f empty-state output stable across 50 reruns', _sc56Stable);
+
+// ===========================================================================
+// SCENARIO 57 — Partial state patch rollback (TS-14A)
+// ===========================================================================
+console.log('\n=== SCENARIO 57 — partial state patch rollback (TS-14A) ===');
+// Snapshot via JSON to compare against post-render state.
+const _sc57Before = JSON.parse(JSON.stringify(_dashModel));
+const _sc57Result = _dash.buildDashboardView(_dashModel, _dashDepsStub);
+void _sc57Result;
+// Composition layer must NOT mutate inputs.
+eq('SC57.a model events untouched', _dashModel.events, _sc57Before.events);
+eq('SC57.b model todos untouched', _dashModel.todos, _sc57Before.todos);
+eq('SC57.c model profile untouched', _dashModel.profile, _sc57Before.profile);
+
+// Simulate a partial patch (only events changes), verify the dashboard
+// reflects new events without re-mutating profile/todos.
+const _sc57Patched = { ..._dashModel, events: [{ id: 'X', title: 'New', date: '2026-05-22', type: 'studio' }] };
+const _sc57R = _dash.buildDashboardView(_sc57Patched, _dashDepsStub);
+tr('SC57.d patched events flow through to upcomingHtml', _sc57R.upcomingHtml.includes('New'));
+tr('SC57.e patched events do NOT corrupt urgent (separate field)', _sc57R.urgentHtml === _sc54First.urgentHtml);
+
+// Rollback to original — same output as before
+const _sc57Rolled = _dash.buildDashboardView(_dashModel, _dashDepsStub);
+eq('SC57.f rollback to original model → original output restored', _sc57Rolled.upcomingHtml, _sc54First.upcomingHtml);
+
+// ===========================================================================
+// SCENARIO 58 — Mount/unmount cleanup symmetry (TS-14A)
+// ===========================================================================
+console.log('\n=== SCENARIO 58 — mount/unmount cleanup symmetry (TS-14A) ===');
+// The composition layer never touches the DOM, so "mount/unmount" symmetry
+// at the TS-14A level reduces to: building a view + discarding it must
+// not leak any global state. We assert no module-private accumulator
+// grows across rebuilds.
+let _sc58HtmlLengthsEvent = [];
+for (let i = 0; i < 10; i++) {
+  _sc58HtmlLengthsEvent.push(_dash.buildDashboardView(_dashModel, _dashDepsStub).upcomingHtml.length);
+}
+const _sc58FirstLen = _sc58HtmlLengthsEvent[0];
+const _sc58AllSame = _sc58HtmlLengthsEvent.every((n) => n === _sc58FirstLen);
+tr('SC58.a 10 rebuilds → constant upcoming HTML length', _sc58AllSame);
+
+// Empty-mount → non-empty-mount → empty-mount cycle returns to identical empty output
+const _sc58EmptyA = _dash.buildDashboardView(_sc56Empty, _dashDepsStub);
+const _sc58NonEmpty = _dash.buildDashboardView(_dashModel, _dashDepsStub);
+const _sc58EmptyB = _dash.buildDashboardView(_sc56Empty, _dashDepsStub);
+void _sc58NonEmpty;
+eq('SC58.b empty → non-empty → empty: empty outputs match (no drift)', _sc58EmptyA, _sc58EmptyB);
+
+// 50 alternating cycles — final empty state == first empty state
+for (let i = 0; i < 50; i++) {
+  _dash.buildDashboardView(i % 2 === 0 ? _sc56Empty : _dashModel, _dashDepsStub);
+}
+const _sc58FinalEmpty = _dash.buildDashboardView(_sc56Empty, _dashDepsStub);
+eq('SC58.c 50 alternating cycles → empty output stable', _sc58FinalEmpty, _sc58EmptyA);
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------

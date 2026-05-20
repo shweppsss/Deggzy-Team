@@ -140,6 +140,21 @@ import {
   isoMin,
   isoMax,
 } from './render/shared/dates';
+// TS-14A — dashboard render module.
+import {
+  renderDashboardView,
+  registerDashboardSideEffects,
+  registerDashboardModelBuilder,
+  type DashboardDeps as _DashboardDeps,
+  type DashboardEvent,
+  type DashboardProfile,
+  type DashboardRole,
+  type DashboardUser,
+  type DashboardPhase,
+  type DashboardModelInputs,
+  type DashboardModelExtras,
+} from './render/dashboard';
+// (isFutureOrToday + parseDate already imported above from render-utils.)
 import {
   // session
   getCurrentUser,
@@ -696,7 +711,118 @@ function callInlineRender(name: string): () => void {
   };
 }
 
-registerSectionRenderer(DASHBOARD_SECTION,     callInlineRender('renderDashboard'));
+// TS-14A — dashboard now uses the TS render pipeline. main.ts builds
+// the DashboardDeps snapshot lazily on each render by reading from
+// TS modules (format-utils, render-utils, domain) + injecting the
+// legacy helpers (filterVisibleEvents, isTodoOnDashboard) that haven't
+// been migrated yet. No new window.X bridges added per directive.
+function _buildDashboardDeps(): _DashboardDeps {
+  type LegacyHelpers = {
+    filterVisibleEvents?: (events: DashboardEvent[]) => DashboardEvent[];
+    isTodoOnDashboard?: (todo: unknown, roleKey: string) => boolean;
+  };
+  const w = window as unknown as LegacyHelpers;
+  const deps: _DashboardDeps = {
+    filterVisibleEvents: (events: DashboardEvent[]) =>
+      typeof w.filterVisibleEvents === 'function' ? w.filterVisibleEvents(events) : events,
+    isTodoOnDashboard: (todo: unknown, roleKey: string) =>
+      typeof w.isTodoOnDashboard === 'function' ? !!w.isTodoOnDashboard(todo, roleKey) : true,
+    todoPriority: (todo: { priority?: unknown; urgent?: unknown }) => todoPriority(todo),
+    formatDate: (s: string | undefined) => formatDate(s),
+    formatEventTime: (s: string | undefined) => formatEventTime(s),
+    typeLabel: (t: string | undefined) => typeLabel(t),
+    escapeHtml: (s: string | null | undefined) => escapeHtml(s),
+    icon: (name: string, size?: number, extra?: string) => icon(name, size, extra),
+    emptyState: (kind: string, title: string, hint?: string, ctaLabel?: string, ctaOnclick?: string) =>
+      emptyState(kind, title, hint, ctaLabel, ctaOnclick),
+    isFutureOrToday: (s: string | undefined, now?: Date) => isFutureOrToday(s, now),
+    parseDate: (s: string | undefined) => parseDate(s),
+  };
+  return deps;
+}
+
+// Side-effects hook — animateCounter / swipe / role widgets / saveAlias /
+// toast / openDetail. The TS render orchestration calls these post-mount.
+registerDashboardSideEffects({
+  renderRoleWidgets: () => {
+    const w = window as unknown as { renderRoleWidgets?: () => void };
+    if (typeof w.renderRoleWidgets === 'function') w.renderRoleWidgets();
+  },
+  renderTeamActivity: async () => {
+    const w = window as unknown as { renderTeamActivity?: () => Promise<void> };
+    if (typeof w.renderTeamActivity === 'function') {
+      try { await w.renderTeamActivity(); } catch (_e) { /* no-op */ }
+    }
+  },
+  animateCounter: (el: HTMLElement, target: number) => {
+    const w = window as unknown as { animateCounter?: (el: HTMLElement, target: number) => void };
+    if (typeof w.animateCounter === 'function') w.animateCounter(el, target);
+  },
+  attachSwipeDelete: (el: HTMLElement, onDelete: () => void) => {
+    const w = window as unknown as { attachSwipeDelete?: (el: HTMLElement, fn: () => void) => void };
+    if (typeof w.attachSwipeDelete === 'function') w.attachSwipeDelete(el, onDelete);
+  },
+  swipeDeleteEvent: (id: string) => {
+    const w = window as unknown as { swipeDeleteEvent?: (id: string) => void };
+    if (typeof w.swipeDeleteEvent === 'function') w.swipeDeleteEvent(id);
+  },
+  saveAlias: async (alias: string) => {
+    const u = getCurrentUser();
+    if (!u) return false;
+    return saveAlias(u.id, alias);
+  },
+  toast: (msg: string) => {
+    const w = window as unknown as { toast?: (m: string) => void };
+    if (typeof w.toast === 'function') w.toast(msg);
+  },
+  openDetail: (kind: string, id: string | number) => {
+    openDetail(kind as Parameters<typeof openDetail>[0], String(id));
+  },
+});
+
+// Reads inputs.events / inputs.todos from getState() inside mount.ts —
+// but we also need to fill profile + user. Override the model builder
+// to inject those from the TS auth session.
+registerDashboardModelBuilder((inputs: DashboardModelInputs): DashboardModelExtras => {
+  type Legacy = {
+    PROJECT_DATE?: Date | string | number;
+    PHASES?: DashboardPhase[];
+    ROLE_BY_KEY?: Record<string, DashboardRole>;
+    computePhase?: (today: Date) => DashboardPhase;
+    getCurrentRoleKey?: () => string;
+  };
+  const w = window as unknown as Legacy;
+  const projectDate = w.PROJECT_DATE instanceof Date
+    ? w.PROJECT_DATE
+    : (typeof w.PROJECT_DATE === 'string' || typeof w.PROJECT_DATE === 'number'
+        ? new Date(w.PROJECT_DATE)
+        : new Date('2026-09-11'));
+  const phases: DashboardPhase[] = Array.isArray(w.PHASES) ? w.PHASES : [];
+  const roleKey = typeof w.getCurrentRoleKey === 'function' ? w.getCurrentRoleKey() : 'autre';
+  const role: DashboardRole = (w.ROLE_BY_KEY && w.ROLE_BY_KEY[roleKey])
+    || (w.ROLE_BY_KEY && w.ROLE_BY_KEY['autre'])
+    || { key: roleKey, label: 'Autre' };
+  const phase = typeof w.computePhase === 'function'
+    ? w.computePhase(inputs.today)
+    : { label: '', title: '' };
+  const phaseIdx = phases.findIndex((p) => p && p.label && phase.label && p.label.includes(phase.label));
+  // Inject the TS-resolved profile + user into the inputs (mount.ts
+  // passes inputs through with these merged in).
+  inputs.profile = (getCurrentProfile() || null) as DashboardProfile | null;
+  inputs.user = (getCurrentUser() || null) as DashboardUser | null;
+  return { projectDate, phases, roleKey, role, phase, phaseIdx };
+});
+
+// TS-14A — register the dashboard renderer against the dispatch.
+registerSectionRenderer(DASHBOARD_SECTION, () => {
+  renderDashboardView(_buildDashboardDeps());
+});
+// The inline `function renderDashboard()` shim looks for `window.renderDashboardTS`
+// — wire it here so legacy direct calls (e.g. `renderDashboard()` inside save flows)
+// route through the TS pipeline.
+(window as unknown as { renderDashboardTS?: () => void }).renderDashboardTS = () => {
+  renderDashboardView(_buildDashboardDeps());
+};
 registerSectionRenderer('profile',             callInlineRender('renderProfile'));
 registerSectionRenderer(TODOS_SECTION,         callInlineRender('renderTodos'));
 registerSectionRenderer('catalogue',           callInlineRender('renderCatalogue'));
