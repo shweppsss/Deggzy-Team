@@ -155,6 +155,18 @@ import {
   type DashboardModelExtras,
 } from './render/dashboard';
 // (isFutureOrToday + parseDate already imported above from render-utils.)
+// TS-14B — todos + inspirations render modules.
+import {
+  renderTodosView,
+  registerTodosSideEffects,
+  type TodoDeps as _TodoDeps,
+} from './render/todos';
+import {
+  renderInspirationsView,
+  registerInspirationsSideEffects,
+  type InspiDeps as _InspiDeps,
+} from './render/inspirations';
+import { TODO_CATEGORIES as _TODO_CATS } from './features/detail/domain';
 import {
   // session
   getCurrentUser,
@@ -823,8 +835,49 @@ registerSectionRenderer(DASHBOARD_SECTION, () => {
 (window as unknown as { renderDashboardTS?: () => void }).renderDashboardTS = () => {
   renderDashboardView(_buildDashboardDeps());
 };
+// TS-14B — todos + inspirations TS shims for the inline `renderTodos()` /
+// `renderInspirations()` wrappers (which forward to these). Same pattern.
+(window as unknown as { renderTodosTS?: () => void }).renderTodosTS = () => {
+  renderTodosView(_buildTodoDeps());
+};
+(window as unknown as { renderInspirationsTS?: () => void }).renderInspirationsTS = () => {
+  renderInspirationsView(_buildInspiDeps());
+};
 registerSectionRenderer('profile',             callInlineRender('renderProfile'));
-registerSectionRenderer(TODOS_SECTION,         callInlineRender('renderTodos'));
+// TS-14B — todos use the TS render pipeline.
+function _buildTodoDeps(): _TodoDeps {
+  type LegacyHelpers = {
+    tagChipsHTML?: (tags: unknown, opts?: { limit?: number }) => string;
+    _entityMatchesTagFilter?: (e: unknown) => boolean;
+  };
+  const w = window as unknown as LegacyHelpers;
+  return {
+    escapeHtml: (s: string | null | undefined) => escapeHtml(s),
+    formatDate: (s: string | undefined) => formatDate(s),
+    icon: (name: string, size?: number, extra?: string) => icon(name, size, extra),
+    emptyState: (kind: string, title: string, hint?: string, ctaLabel?: string, ctaOnclick?: string) =>
+      emptyState(kind, title, hint, ctaLabel, ctaOnclick),
+    todoPriority: (t) => todoPriority(t),
+    tagChipsHTML: (tags, opts) =>
+      typeof w.tagChipsHTML === 'function' ? w.tagChipsHTML(tags, opts) : '',
+    entityMatchesTagFilter: (t) =>
+      typeof w._entityMatchesTagFilter === 'function' ? !!w._entityMatchesTagFilter(t) : true,
+    categories: _TODO_CATS,
+  };
+}
+registerTodosSideEffects({
+  attachSwipeDelete: (el: HTMLElement, onDelete: () => void) => {
+    const w = window as unknown as { attachSwipeDelete?: (el: HTMLElement, fn: () => void) => void };
+    if (typeof w.attachSwipeDelete === 'function') w.attachSwipeDelete(el, onDelete);
+  },
+  swipeDeleteTodo: (id: string) => {
+    const w = window as unknown as { swipeDeleteTodo?: (id: string) => void };
+    if (typeof w.swipeDeleteTodo === 'function') w.swipeDeleteTodo(id);
+  },
+});
+registerSectionRenderer(TODOS_SECTION, () => {
+  renderTodosView(_buildTodoDeps());
+});
 registerSectionRenderer('catalogue',           callInlineRender('renderCatalogue'));
 // TS-13C — calendar uses the TS render path. main.ts builds the
 // CalendarDeps snapshot lazily on each render by reading the legacy
@@ -874,7 +927,36 @@ registerCalendarInteractionHooks({
     if (typeof w.renderTagsBar === 'function') w.renderTagsBar();
   },
 });
-registerSectionRenderer(INSPIRATIONS_SECTION,  callInlineRender('renderInspirations'));
+// TS-14B — inspirations use the TS render pipeline.
+function _buildInspiDeps(): _InspiDeps {
+  type LegacyHelpers = {
+    parseMedia?: (url: string) => { mediaType?: string; mediaUrl?: string; mediaEmbed?: string; provider?: string } | null;
+    INSPI_CATEGORIES?: ReadonlyArray<string>;
+  };
+  const w = window as unknown as LegacyHelpers;
+  const cats: ReadonlyArray<string> = Array.isArray(w.INSPI_CATEGORIES)
+    ? w.INSPI_CATEGORIES
+    : ['Audio', 'Visuel', 'TikTok', 'Mood', 'Clip', 'Cover', 'Style', 'Autre'];
+  return {
+    escapeHtml: (s: string | null | undefined) => escapeHtml(s),
+    icon: (name: string, size?: number, extra?: string) => icon(name, size, extra),
+    emptyState: (kind: string, title: string, hint?: string, ctaLabel?: string, ctaOnclick?: string) =>
+      emptyState(kind, title, hint, ctaLabel, ctaOnclick),
+    parseMedia: (url: string) =>
+      typeof w.parseMedia === 'function' ? w.parseMedia(url) : null,
+    categories: cats,
+  };
+}
+registerInspirationsSideEffects({
+  getInspiUrl: async (id: string) => {
+    const w = window as unknown as { getInspiUrl?: (id: string) => Promise<string | null | undefined> };
+    if (typeof w.getInspiUrl !== 'function') return null;
+    return w.getInspiUrl(id);
+  },
+});
+registerSectionRenderer(INSPIRATIONS_SECTION, () => {
+  renderInspirationsView(_buildInspiDeps());
+});
 registerSectionRenderer('clips',               callInlineRender('renderClips'));
 registerSectionRenderer('capsules',            callInlineRender('renderCapsules'));
 registerSectionRenderer('assets',              callInlineRender('renderAssets'));

@@ -2910,6 +2910,194 @@ for (let i = 0; i < 50; i++) {
 const _sc58FinalEmpty = _dash.buildDashboardView(_sc56Empty, _dashDepsStub);
 eq('SC58.c 50 alternating cycles → empty output stable', _sc58FinalEmpty, _sc58EmptyA);
 
+// ===========================================================================
+// TS-14B — TODOS + INSPIRATIONS RENDER SCENARIOS (SC59..SC66)
+// ===========================================================================
+const todosBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', 'todos', 'index.ts')],
+  bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+  write: false, logLevel: 'silent',
+});
+const _todosMod = { exports: {} };
+(function (module, exports, require) { eval(todosBundle.outputFiles[0].text); })(_todosMod, _todosMod.exports, require);
+const _todosR = _todosMod.exports;
+
+const inspiBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', 'inspirations', 'index.ts')],
+  bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+  write: false, logLevel: 'silent',
+});
+const _inspiMod = { exports: {} };
+(function (module, exports, require) { eval(inspiBundle.outputFiles[0].text); })(_inspiMod, _inspiMod.exports, require);
+const _inspiR = _inspiMod.exports;
+
+const _todoDepsStub = {
+  escapeHtml: (s) => String(s == null ? '' : s),
+  formatDate: (s) => s || '',
+  icon: () => '',
+  emptyState: (kind, title) => `<div class="empty">${title}</div>`,
+  todoPriority: (t) => (t && (t.priority || (t.urgent ? 'urgent' : 'normal'))) || 'normal',
+  tagChipsHTML: () => '',
+  entityMatchesTagFilter: () => true,
+  categories: ['Pre-Launch', 'Rollout', 'Pivot', 'Élévation', 'Événement', 'Autre'],
+};
+
+const _todosFixture = [
+  { id: 't1', text: 'Pre-launch task', cat: 'Pre-Launch', done: false, urgent: true, priority: 'urgent' },
+  { id: 't2', text: 'Rollout task', cat: 'Rollout', done: false, priority: 'normal' },
+  { id: 't3', text: 'Done task', cat: 'Pre-Launch', done: true, priority: 'normal' },
+  { id: 't4', text: 'Critical task', cat: 'Pre-Launch', done: false, priority: 'critique', due: '2026-05-15' },
+];
+
+// ===========================================================================
+// SCENARIO 59 — Todos rerender idempotence (TS-14B)
+// ===========================================================================
+console.log('\n=== SCENARIO 59 — todos rerender idempotence (TS-14B) ===');
+const _sc59Model = { todos: _todosFixture, filter: 'all', sort: 'phase', tagFilter: null };
+const _sc59First = _todosR.buildTodosView(_sc59Model, _todoDepsStub);
+let _sc59Same = true;
+for (let i = 0; i < 100; i++) {
+  if (JSON.stringify(_todosR.buildTodosView(_sc59Model, _todoDepsStub)) !== JSON.stringify(_sc59First)) {
+    _sc59Same = false; break;
+  }
+}
+tr('SC59.a 100 todos renders → identical result', _sc59Same);
+eq('SC59.b progress label correct', _sc59First.progressLabel, '1 / 4');
+eq('SC59.c progress percent correct', _sc59First.progressBarPct, 25);
+// 4 list-row buttons expected (1 per todo).
+eq('SC59.d 4 list rows in output', (_sc59First.listHtml.match(/class="list-row /g) || []).length, 4);
+
+// ===========================================================================
+// SCENARIO 60 — Todos ordering + filter stability (TS-14B)
+// ===========================================================================
+console.log('\n=== SCENARIO 60 — todos ordering + filter stability (TS-14B) ===');
+const _sc60Shuffled = { ..._sc59Model, todos: [_todosFixture[3], _todosFixture[0], _todosFixture[2], _todosFixture[1]] };
+const _sc60Result = _todosR.buildTodosView(_sc60Shuffled, _todoDepsStub);
+eq('SC60.a shuffled todos → identical listHtml (phase grouping sort)', _sc60Result.listHtml, _sc59First.listHtml);
+
+// Filter to 'urgent' — only t1 (urgent + !done) qualifies
+const _sc60Urgent = _todosR.buildTodosView({ ..._sc59Model, filter: 'urgent' }, _todoDepsStub);
+eq('SC60.b urgent filter → 1 row', (_sc60Urgent.listHtml.match(/class="list-row /g) || []).length, 1);
+
+// Filter to 'done' — only t3
+const _sc60Done = _todosR.buildTodosView({ ..._sc59Model, filter: 'done' }, _todoDepsStub);
+eq('SC60.c done filter → 1 row', (_sc60Done.listHtml.match(/class="list-row /g) || []).length, 1);
+tr('SC60.d done filter → empty=false (1 result)', _sc60Done.empty === false);
+
+// Sort by name — alphabetical order; output stable across shuffled inputs
+const _sc60NameA = _todosR.buildTodosView({ ..._sc59Model, sort: 'name' }, _todoDepsStub);
+const _sc60NameB = _todosR.buildTodosView({ ..._sc60Shuffled, sort: 'name' }, _todoDepsStub);
+eq('SC60.e name sort → identical regardless of input order', _sc60NameA.listHtml, _sc60NameB.listHtml);
+
+// ===========================================================================
+// SCENARIO 61 — Todos empty-state stability (TS-14B)
+// ===========================================================================
+console.log('\n=== SCENARIO 61 — todos empty-state stability (TS-14B) ===');
+const _sc61Empty = _todosR.buildTodosView({ todos: [], filter: 'all', sort: 'phase', tagFilter: null }, _todoDepsStub);
+tr('SC61.a empty todos → empty=true', _sc61Empty.empty === true);
+eq('SC61.b empty todos → progress "0 / 0"', _sc61Empty.progressLabel, '0 / 0');
+eq('SC61.c empty todos → 0 %', _sc61Empty.progressBarPct, 0);
+let _sc61Stable = true;
+for (let i = 0; i < 50; i++) {
+  if (JSON.stringify(_todosR.buildTodosView({ todos: [], filter: 'all', sort: 'phase', tagFilter: null }, _todoDepsStub)) !== JSON.stringify(_sc61Empty)) {
+    _sc61Stable = false; break;
+  }
+}
+tr('SC61.d 50 reruns on empty → stable', _sc61Stable);
+
+// ===========================================================================
+// SCENARIO 62 — Todos input mutation rollback (TS-14B)
+// ===========================================================================
+console.log('\n=== SCENARIO 62 — todos input mutation rollback (TS-14B) ===');
+const _sc62Snapshot = JSON.stringify(_todosFixture);
+for (let i = 0; i < 10; i++) {
+  _todosR.buildTodosView(_sc59Model, _todoDepsStub);
+}
+eq('SC62.a 10 renders did NOT mutate the input array', JSON.stringify(_todosFixture), _sc62Snapshot);
+
+// Pure helpers don't mutate either
+const _sc62Sorted = _todosR.applySort(_todosFixture, 'name');
+tr('SC62.b applySort returns a NEW array', _sc62Sorted !== _todosFixture);
+eq('SC62.c applySort does NOT mutate the input', JSON.stringify(_todosFixture), _sc62Snapshot);
+
+// ===========================================================================
+// INSPIRATIONS scenarios — SC63..SC66
+// ===========================================================================
+const _inspiDepsStub = {
+  escapeHtml: (s) => String(s == null ? '' : s),
+  icon: () => '',
+  emptyState: (kind, title) => `<div class="empty">${title}</div>`,
+  parseMedia: (url) => ({ mediaType: 'link', mediaUrl: url, mediaEmbed: '', provider: '' }),
+  categories: ['Audio', 'Visuel', 'Mood', 'Autre'],
+};
+
+const _inspiFixture = [
+  { id: 'i1', title: 'First', category: 'Mood', addedAt: '2026-05-01T10:00', mediaType: 'image', mediaUrl: 'http://x/1.png' },
+  { id: 'i2', title: 'Second', category: 'Visuel', addedAt: '2026-05-15T12:00', mediaType: 'note' },
+  { id: 'i3', title: 'Third', category: 'Mood', addedAt: '2026-05-10T08:00', mediaType: 'link', mediaUrl: 'http://example.com' },
+];
+
+// ===========================================================================
+// SCENARIO 63 — Inspirations rerender idempotence (TS-14B)
+// ===========================================================================
+console.log('\n=== SCENARIO 63 — inspirations rerender idempotence (TS-14B) ===');
+const _sc63Model = { list: _inspiFixture, filter: 'all' };
+const _sc63First = _inspiR.buildInspirationsView(_sc63Model, _inspiDepsStub);
+let _sc63Same = true;
+for (let i = 0; i < 100; i++) {
+  if (JSON.stringify(_inspiR.buildInspirationsView(_sc63Model, _inspiDepsStub)) !== JSON.stringify(_sc63First)) {
+    _sc63Same = false; break;
+  }
+}
+tr('SC63.a 100 inspi renders → identical', _sc63Same);
+eq('SC63.b 3 cards in output', (_sc63First.gridHtml.match(/<article class="inspi-card-v2"/g) || []).length, 3);
+
+// ===========================================================================
+// SCENARIO 64 — Inspirations ordering determinism (newest first)
+// ===========================================================================
+console.log('\n=== SCENARIO 64 — inspirations ordering determinism (TS-14B) ===');
+const _sc64Shuffled = { list: [_inspiFixture[2], _inspiFixture[0], _inspiFixture[1]], filter: 'all' };
+const _sc64Result = _inspiR.buildInspirationsView(_sc64Shuffled, _inspiDepsStub);
+eq('SC64.a shuffled inputs → identical gridHtml (sort by addedAt desc)', _sc64Result.gridHtml, _sc63First.gridHtml);
+// First card should be i2 (latest addedAt).
+const _sc64FirstCardId = (_sc63First.gridHtml.match(/data-id="([^"]+)"/) || [])[1];
+eq('SC64.b first card is the newest (i2)', _sc64FirstCardId, 'i2');
+
+// Filter to 'Mood' — only i1 + i3
+const _sc64Mood = _inspiR.buildInspirationsView({ ..._sc63Model, filter: 'Mood' }, _inspiDepsStub);
+eq('SC64.c Mood filter → 2 cards', (_sc64Mood.gridHtml.match(/<article class="inspi-card-v2"/g) || []).length, 2);
+
+// ===========================================================================
+// SCENARIO 65 — Inspirations empty-state stability (TS-14B)
+// ===========================================================================
+console.log('\n=== SCENARIO 65 — inspirations empty-state stability (TS-14B) ===');
+const _sc65Empty = _inspiR.buildInspirationsView({ list: [], filter: 'all' }, _inspiDepsStub);
+tr('SC65.a empty list → empty=true', _sc65Empty.empty === true);
+eq('SC65.b empty list → gridHtml empty', _sc65Empty.gridHtml, '');
+let _sc65Stable = true;
+for (let i = 0; i < 50; i++) {
+  if (JSON.stringify(_inspiR.buildInspirationsView({ list: [], filter: 'all' }, _inspiDepsStub)) !== JSON.stringify(_sc65Empty)) {
+    _sc65Stable = false; break;
+  }
+}
+tr('SC65.c 50 reruns on empty → stable', _sc65Stable);
+
+// ===========================================================================
+// SCENARIO 66 — Inspirations input mutation rollback (TS-14B)
+// ===========================================================================
+console.log('\n=== SCENARIO 66 — inspirations input mutation rollback (TS-14B) ===');
+const _sc66Snapshot = JSON.stringify(_inspiFixture);
+for (let i = 0; i < 10; i++) {
+  _inspiR.buildInspirationsView(_sc63Model, _inspiDepsStub);
+}
+eq('SC66.a 10 renders did NOT mutate input', JSON.stringify(_inspiFixture), _sc66Snapshot);
+
+// normalizeInspi doesn't mutate either
+const _sc66NormA = _inspiR.normalizeInspi(_inspiFixture[0], _inspiDepsStub);
+const _sc66NormB = _inspiR.normalizeInspi(_inspiFixture[0], _inspiDepsStub);
+eq('SC66.b normalizeInspi is deterministic', _sc66NormA, _sc66NormB);
+eq('SC66.c normalizeInspi does NOT mutate input', JSON.stringify(_inspiFixture[0]), JSON.stringify({ id: 'i1', title: 'First', category: 'Mood', addedAt: '2026-05-01T10:00', mediaType: 'image', mediaUrl: 'http://x/1.png' }));
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------

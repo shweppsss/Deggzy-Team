@@ -13875,117 +13875,11 @@ function setupProfileAliasEdit() {
 // TODO_CATEGORIES — EXTRACTED in Phase TS-8 to /src/features/detail/domain.ts.
 // Re-attached on window via /src/main.ts.
 
+// renderTodos — EXTRACTED in Phase TS-14B to /src/render/todos/.
+// Inline thin shim forwards to the TS pipeline (window.renderTodosTS,
+// set by /src/main.ts).
 function renderTodos() {
-  const todos = state.todos || [];
-  const total = todos.length;
-  const done = todos.filter(t => t.done).length;
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-
-  document.getElementById('progressValue').textContent = `${done} / ${total}`;
-  document.getElementById('progressPercent').textContent = `${pct} %`;
-  setTimeout(() => {
-    document.getElementById('progressBar').style.width = pct + '%';
-  }, 80);
-
-  // Filter chips
-  const filter = state.todoFilter || 'all';
-  const filters = ['all', ...TODO_CATEGORIES, 'urgent', 'done'];
-  document.getElementById('todoFilter').innerHTML = filters.map(f => {
-    const label = { all: 'Toutes', urgent: 'Urgent', done: 'Terminées' }[f] || f;
-    const count = f === 'all' ? total : f === 'done' ? done : f === 'urgent' ? todos.filter(t => t.urgent && !t.done).length : todos.filter(t => t.cat === f).length;
-    return `<div class="todo-filter-chip ${filter === f ? 'active' : ''}" onclick="setTodoFilter('${f}')">${label} <span style="opacity:.6">· ${count}</span></div>`;
-  }).join('');
-
-  // Sort chips
-  const sort = state.todoSort || 'phase';
-  const sorts = [
-    { id: 'phase', label: 'Par phase' },
-    { id: 'urgent', label: 'Urgent d\'abord' },
-    { id: 'due-asc', label: 'Échéance proche' },
-    { id: 'done-last', label: 'Faites en dernier' },
-    { id: 'recent', label: 'Récentes' },
-    { id: 'name', label: 'A → Z' },
-  ];
-  document.getElementById('todoSort').innerHTML = sorts.map(s =>
-    `<div class="todo-filter-chip ${sort === s.id ? 'active' : ''}" onclick="setTodoSort('${s.id}')">${s.label}</div>`
-  ).join('');
-
-  // Filter logic
-  let visible = todos.slice();
-  if (filter === 'urgent') visible = visible.filter(t => t.urgent && !t.done);
-  else if (filter === 'done') visible = visible.filter(t => t.done);
-  else if (filter !== 'all') visible = visible.filter(t => t.cat === filter);
-  // Active tag filter (top-level — kept independently from category chips)
-  if (state.tagFilter) visible = visible.filter(_entityMatchesTagFilter);
-
-  let html = '';
-
-  if (sort === 'phase') {
-    // Grouped view (default)
-    const groups = {};
-    visible.forEach(t => {
-      const key = t.cat || 'Autre';
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(t);
-    });
-    // Within each group: urgent + undone first, then undone, then done
-    Object.values(groups).forEach(arr => arr.sort((a, b) =>
-      (a.done ? 1 : 0) - (b.done ? 1 : 0) ||
-      (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0) ||
-      (a.due || '9999').localeCompare(b.due || '9999')
-    ));
-    const orderedCats = TODO_CATEGORIES.filter(c => groups[c]);
-    orderedCats.forEach(cat => {
-      const items = groups[cat];
-      if (!items || items.length === 0) return;
-      html += `
-        <div class="list-section">
-          <div class="list-section-head">${cat} <span class="count">${items.filter(i => !i.done).length} / ${items.length}</span></div>
-          <div class="list-section-body">${items.map(todoItemHTML).join('')}</div>
-        </div>
-      `;
-    });
-  } else {
-    // Flat sorted view
-    if (sort === 'urgent') {
-      visible.sort((a, b) =>
-        (a.done ? 1 : 0) - (b.done ? 1 : 0) ||
-        (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0) ||
-        (a.due || '9999').localeCompare(b.due || '9999')
-      );
-    } else if (sort === 'due-asc') {
-      visible.sort((a, b) => {
-        if (a.done !== b.done) return a.done ? 1 : -1;
-        const da = a.due || '9999-12-31';
-        const db = b.due || '9999-12-31';
-        return da.localeCompare(db);
-      });
-    } else if (sort === 'name') {
-      visible.sort((a, b) => a.text.localeCompare(b.text, 'fr', { sensitivity: 'base' }));
-    } else if (sort === 'recent') {
-      visible.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
-    } else if (sort === 'done-last') {
-      visible.sort((a, b) =>
-        (a.done ? 1 : 0) - (b.done ? 1 : 0) ||
-        (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0)
-      );
-    }
-    const sortMeta = sorts.find(s => s.id === sort);
-    const undoneCount = visible.filter(t => !t.done).length;
-    html = `
-      <div class="list-section">
-        <div class="list-section-head">${sortMeta ? sortMeta.label : 'Trié'} <span class="count">${undoneCount} / ${visible.length}</span></div>
-        <div class="list-section-body">${visible.map(todoItemHTML).join('')}</div>
-      </div>
-    `;
-  }
-
-  document.getElementById('todoLists').innerHTML = html || emptyState('todos', 'Aucune tâche ici', 'Soit tout est fait, soit le filtre est trop strict. Crée-en une avec le bouton +.', 'Nouvelle tâche', 'addTodo()');
-  // Attach swipe-to-delete on each rendered todo item
-  document.querySelectorAll('#todoLists .list-row[data-id]').forEach(el => {
-    const id = el.dataset.id;
-    if (id) attachSwipeDelete(el, () => swipeDeleteTodo(id));
-  });
+  if (typeof window.renderTodosTS === 'function') return window.renderTodosTS();
 }
 
 function setTodoSort(id) {
@@ -13995,48 +13889,7 @@ function setTodoSort(id) {
   haptic(8);
 }
 
-function todoItemHTML(t) {
-  const today = new Date(); today.setHours(0,0,0,0);
-  let dueClass = '';
-  let dueLabel = '';
-  if (t.due && !t.done) {
-    const d = new Date(t.due);
-    const diff = Math.ceil((d - today) / (1000*60*60*24));
-    dueLabel = formatDate(t.due);
-    if (diff < 0) { dueClass = 'late'; dueLabel = `En retard · ${dueLabel}`; }
-    else if (diff <= 3) { dueClass = 'soon'; dueLabel = `J-${diff} · ${dueLabel}`; }
-  } else if (t.due) {
-    dueLabel = formatDate(t.due);
-  }
-  const priority = todoPriority(t);
-  const subBits = [];
-  if (t.cat) subBits.push(escapeHtml(t.cat));
-  if (dueLabel) subBits.push(dueLabel);
-  const modifiers = [t.done ? 'is-done' : '', t.urgent ? 'is-urgent' : ''].filter(Boolean).join(' ');
-  // Trail badge — show only when priority is critique or urgent. "Important" is
-  // already signalled by the left-border + colour; cluttering each row's trail
-  // with a badge for every priority would hurt scannability.
-  const trailBadge =
-    !t.done && priority === 'critique' ? '<span class="list-row-badge is-critical" aria-label="Critique" title="Critique">⛔</span>' :
-    !t.done && priority === 'urgent'   ? `<span class="list-row-badge is-urgent" aria-label="Urgent">${icon('bolt', 11)}</span>` :
-    '';
-  const tagHtml = (Array.isArray(t.tags) && t.tags.length) ? ' ' + tagChipsHTML(t.tags, { limit: 2 }) : '';
-  return `
-    <button type="button" class="list-row ${modifiers}" data-id="${t.id}" data-kind="todo" data-action="open" data-priority="${priority}" aria-label="${escapeHtml(t.text)}">
-      <span class="list-row-lead" data-action="toggle-todo" role="checkbox" aria-checked="${t.done ? 'true' : 'false'}" aria-label="Marquer comme ${t.done ? 'à faire' : 'fait'}">
-        <span class="list-row-check">${t.done ? icon('check', 14) : ''}</span>
-      </span>
-      <span class="list-row-body">
-        <span class="list-row-title">${escapeHtml(t.text)}${tagHtml}</span>
-        <span class="list-row-sub ${dueClass}">${subBits.join('<span class="sep">·</span>')}</span>
-      </span>
-      <span class="list-row-trail">
-        ${trailBadge}
-        <span class="list-row-chev" aria-hidden="true">${icon('chevron', 14)}</span>
-      </span>
-    </button>
-  `;
-}
+// todoItemHTML — EXTRACTED in Phase TS-14B to /src/render/todos/widgets/todo-item.ts.
 
 function toggleTodo(id) {
   const t = state.todos.find(x => x.id === id);
@@ -14310,86 +14163,12 @@ function buildInspiFromUrl(url, { title = '', category = 'Mood', notes = '' } = 
   };
 }
 
+// renderInspirations / hydrateAllInspis / inspiCardHTML / normalizeInspi
+// (the renderer side — buildInspiFromUrl stays inline because it's a
+// data builder, not a renderer) — EXTRACTED in Phase TS-14B to
+// /src/render/inspirations/. Inline thin shim forwards to the TS pipeline.
 function renderInspirations() {
-  const list = Array.isArray(state.inspirations) ? state.inspirations : [];
-  const filter = state.inspiFilter || 'all';
-
-  document.getElementById('inspiFilter').innerHTML = ['all', ...INSPI_CATEGORIES].map(f => {
-    const label = f === 'all' ? 'Toutes' : f;
-    const count = f === 'all' ? list.length : list.filter(i => i.category === f).length;
-    return `<div class="todo-filter-chip ${filter === f ? 'active' : ''}" onclick="setInspiFilter('${f}')">${label} <span style="opacity:.6">· ${count}</span></div>`;
-  }).join('');
-
-  let visible = filter === 'all' ? list : list.filter(i => i.category === filter);
-  const grid = document.getElementById('inspiGrid');
-  if (visible.length === 0) {
-    grid.innerHTML = emptyState('inspirations', 'Le mood board attend', 'Image, vidéo, lien ou simple note — chaque référence nourrit le projet.', 'Ajouter une inspiration', 'openInspiLink()');
-    grid.className = 'inspi-grid';
-    return;
-  }
-  // Milanote-style masonry: single grid, newest first, cards sized by content
-  const sorted = visible.slice().sort((a, b) => (b.addedAt || '').localeCompare(a.addedAt || ''));
-  grid.className = 'inspi-grid inspi-grid-masonry';
-  grid.innerHTML = sorted.map(inspiCardHTML).join('');
-  hydrateAllInspis();
-}
-
-async function hydrateAllInspis() {
-  const els = document.querySelectorAll('[data-hydrate-inspi]');
-  for (const el of els) {
-    const id = el.getAttribute('data-hydrate-inspi');
-    if (!id) continue;
-    const url = await getInspiUrl(id);
-    if (url) el.src = url;
-  }
-}
-
-function inspiCardHTML(raw) {
-  const it = normalizeInspi(raw);
-  const cat = escapeHtml(it.category || 'Autre');
-  const title = escapeHtml(it.title || 'Sans titre');
-  const notes = it.notes ? escapeHtml(it.notes) : '';
-  let mediaBlock = '';
-  let cardKind = it._mediaType;
-
-  if (it._mediaType === 'image') {
-    const hydrateAttr = it._needsHydrate ? ` data-hydrate-inspi="${escapeHtml(it.id)}"` : '';
-    const src = it._needsHydrate ? '' : it._mediaUrl;
-    mediaBlock = `<div class="inspi-card-media"><img src="${src}" alt="${title}" loading="lazy"${hydrateAttr} /></div>`;
-  } else if (it._mediaType === 'video') {
-    const hydrateAttr = it._needsHydrate ? ` data-hydrate-inspi="${escapeHtml(it.id)}"` : '';
-    const src = it._needsHydrate ? '' : it._mediaUrl;
-    mediaBlock = `<div class="inspi-card-media"><video src="${src}" muted playsinline loop preload="metadata" onmouseenter="this.play()" onmouseleave="this.pause()"${hydrateAttr}></video><div class="inspi-card-video-badge">${icon('play', 12)}</div></div>`;
-  } else if (it._mediaType === 'embed' && it._mediaEmbed) {
-    const aspect = it.aspect || (it.provider === 'spotify' ? '5/2' : '16/9');
-    mediaBlock = `<div class="inspi-card-media inspi-card-media-embed" style="aspect-ratio:${aspect};">${it._mediaEmbed}</div>`;
-  } else if (it._mediaType === 'embed' && it.provider === 'tiktok') {
-    // TikTok needs their script — we render a styled fallback card
-    mediaBlock = `<div class="inspi-card-media inspi-card-media-link" style="aspect-ratio:9/16; background: linear-gradient(135deg, #25F4EE, #FE2C55);"><div class="inspi-card-link-glyph">${icon('music', 32)}</div></div>`;
-    cardKind = 'link';
-  } else if (it._mediaType === 'link') {
-    const host = (() => { try { return new URL(it._mediaUrl).hostname.replace(/^www\./, ''); } catch (_) { return it._mediaUrl; } })();
-    mediaBlock = `<div class="inspi-card-media inspi-card-media-link"><div class="inspi-card-link-glyph">${icon('link', 24)}</div><div class="inspi-card-link-host">${escapeHtml(host)}</div></div>`;
-  } else {
-    // Note
-    mediaBlock = `<div class="inspi-card-note"><div class="inspi-card-note-glyph">“</div>${notes ? `<div class="inspi-card-note-text">${notes}</div>` : ''}</div>`;
-  }
-
-  const showFooter = it._mediaType !== 'note';
-  return `
-    <article class="inspi-card-v2" data-id="${it.id}" data-kind="inspi" data-action="open" data-media="${cardKind}" tabindex="0" role="button" aria-label="${title}">
-      ${mediaBlock}
-      ${showFooter ? `
-        <div class="inspi-card-foot">
-          <div class="inspi-card-title">${title}</div>
-          <div class="inspi-card-meta"><span class="inspi-card-badge">${cat}</span></div>
-        </div>` : `
-        <div class="inspi-card-foot">
-          <div class="inspi-card-title">${title}</div>
-          <div class="inspi-card-meta"><span class="inspi-card-badge">${cat}</span></div>
-        </div>`}
-    </article>
-  `;
+  if (typeof window.renderInspirationsTS === 'function') return window.renderInspirationsTS();
 }
 
 /* CLIPS + CAPSULES — shared render/upload/delete handlers. Both sections work
