@@ -4673,6 +4673,135 @@ await (async () => {
   tr('SC123.a multiple concurrent replays produced 1..N pushes', sc123.calls.push >= 1);
   tr('SC123.b final state is clean', _offlineR.isDirty() === false);
   tr('SC123.c token monotonically incremented', _offlineR._getReplayToken() >= 2);
+
+  // ===========================================================================
+  // REALTIME-1 — PRESENCE + BROADCAST + ACTIVITY FEED (SC124..SC128)
+  // ===========================================================================
+  const _rtR = _bundleFeatureDir('realtime');
+
+  function _makeMockChannel() {
+    const handlers = {};
+    const sent = [];
+    return {
+      on(eventType, opts, fn) { (handlers[eventType] = handlers[eventType] || []).push({ opts, fn }); return this; },
+      send(payload) { sent.push(payload); return Promise.resolve(); },
+      subscribe(cb) { if (typeof cb === 'function') cb('SUBSCRIBED'); return this; },
+      unsubscribe() { return Promise.resolve(); },
+      _fire(eventType, payload) { (handlers[eventType] || []).forEach(({ fn }) => fn(payload)); },
+      _sent: sent,
+    };
+  }
+
+  function _makeRTHarness(actor = { id: 'u1', name: 'Alice' }) {
+    const channels = {};
+    const calls = { create: 0, toasts: [] };
+    let presenceMap = null;
+    return {
+      channels, calls,
+      setPresenceMap: (m) => { presenceMap = m; },
+      deps: {
+        createChannel: (name) => {
+          calls.create++;
+          const c = _makeMockChannel();
+          channels[name] = c;
+          return c;
+        },
+        getActor: () => actor,
+        getPresenceMap: () => presenceMap,
+        toast: (m) => calls.toasts.push(m),
+      },
+    };
+  }
+
+  // SCENARIO 124 — Presence read-only view
+  console.log('\n=== SCENARIO 124 — presence read-only view (Realtime-1) ===');
+  _rtR._resetRealtime();
+  const sc124 = _makeRTHarness();
+  sc124.setPresenceMap({ u1: { id: 'u1', name: 'Alice' }, u2: { id: 'u2', name: 'Bob' } });
+  _rtR.registerRealtime(sc124.deps);
+  eq('SC124.a getOnlineCount reflects map', _rtR.getOnlineCount(), 2);
+  let sc124Last = null;
+  _rtR.subscribePresence((users) => { sc124Last = users; });
+  tr('SC124.b sync first-fire delivers current list', sc124Last && sc124Last.length === 2);
+  // Add a user → diff detector emits
+  sc124.setPresenceMap({ u1: { id: 'u1', name: 'Alice' }, u2: { id: 'u2', name: 'Bob' }, u3: { id: 'u3', name: 'Carol' } });
+  _rtR._forceRefresh();
+  eq('SC124.c after add: online count = 3', _rtR.getOnlineCount(), 3);
+  tr('SC124.d subscriber received updated list', sc124Last && sc124Last.length === 3);
+  // Same map again → no emit
+  const sc124PrevLast = sc124Last;
+  _rtR._forceRefresh();
+  tr('SC124.e identical refresh does NOT re-emit', sc124Last === sc124PrevLast);
+
+  // SCENARIO 125 — Broadcast send + self-suppression
+  console.log('\n=== SCENARIO 125 — broadcast send (Realtime-1) ===');
+  _rtR._resetRealtime();
+  const sc125 = _makeRTHarness();
+  _rtR.registerRealtime(sc125.deps);
+  tr('SC125.a channel "activity:degzzy_main" was created', !!sc125.channels['activity:degzzy_main']);
+  const sc125Received = [];
+  _rtR.subscribeActivity((ev) => sc125Received.push(ev));
+  const fired = _rtR.broadcastActivity('track:added', 'Alice added "New Song"', 'tr-123');
+  tr('SC125.b broadcastActivity returns the stamped event', !!fired && fired.kind === 'track:added');
+  tr('SC125.c event id stamped + counter monotonic', !!fired.id && fired.id.includes(':1:'));
+  tr('SC125.d send() called on the channel', sc125.channels['activity:degzzy_main']._sent.length === 1);
+  eq('SC125.e self-fire is suppressed (seen LRU)', sc125Received.length, 0);
+
+  // SCENARIO 126 — Remote event ingestion + dedupe
+  console.log('\n=== SCENARIO 126 — remote ingest + dedupe (Realtime-1) ===');
+  _rtR._resetRealtime();
+  const sc126 = _makeRTHarness();
+  _rtR.registerRealtime(sc126.deps);
+  const sc126Received = [];
+  _rtR.subscribeActivity((ev) => sc126Received.push(ev));
+  // Simulate Supabase delivering a broadcast from another client.
+  const remoteEvent = {
+    id: 'u2:1:1700000000000',
+    kind: 'track:added',
+    actor: { id: 'u2', name: 'Bob' },
+    summary: 'Bob added "Remote Track"',
+    at: '2026-05-20T12:00:00Z',
+  };
+  sc126.channels['activity:degzzy_main']._fire('broadcast', { payload: remoteEvent });
+  eq('SC126.a remote event delivered to subscribers', sc126Received.length, 1);
+  eq('SC126.b received event matches the payload id', sc126Received[0].id, remoteEvent.id);
+  // Replay same event → dedupe kicks in
+  sc126.channels['activity:degzzy_main']._fire('broadcast', { payload: remoteEvent });
+  eq('SC126.c duplicate delivery is dropped (still 1 fire)', sc126Received.length, 1);
+  // New event with different id → delivered
+  sc126.channels['activity:degzzy_main']._fire('broadcast', { payload: { ...remoteEvent, id: 'u2:2:next' } });
+  eq('SC126.d unique id is delivered', sc126Received.length, 2);
+
+  // SCENARIO 127 — Activity feed ring buffer
+  console.log('\n=== SCENARIO 127 — activity feed ring buffer (Realtime-1) ===');
+  _rtR._resetRealtime();
+  const sc127 = _makeRTHarness();
+  _rtR.registerRealtime(sc127.deps);
+  // Inject 60 remote events
+  for (let i = 0; i < 60; i++) {
+    _rtR._injectRemoteEvent({ id: 'evt-' + i, kind: 'track:added', actor: { id: 'u', name: 'U' }, summary: 's' + i, at: 'now' });
+  }
+  eq('SC127.a feed size capped at 50 (default max)', _rtR._getFeedSize(), 50);
+  const feed = _rtR.getActivityEvents();
+  tr('SC127.b feed is most-recent-first', feed[0].id === 'evt-59' && feed[49].id === 'evt-10');
+  // appendLocalActivity also goes into the buffer
+  _rtR.appendLocalActivity({ id: 'local-1', kind: 'track:added', actor: { id: 'me', name: 'Me' }, summary: 'local', at: 'now' });
+  const after = _rtR.getActivityEvents();
+  tr('SC127.c local append takes the head slot', after[0].id === 'local-1');
+  eq('SC127.d feed size still 50 after local append', _rtR._getFeedSize(), 50);
+
+  // SCENARIO 128 — No actor → broadcastActivity returns null
+  console.log('\n=== SCENARIO 128 — no-actor safety (Realtime-1) ===');
+  _rtR._resetRealtime();
+  const sc128 = _makeRTHarness(null);
+  // Override getActor to return null
+  sc128.deps.getActor = () => null;
+  _rtR.registerRealtime(sc128.deps);
+  const sc128Result = _rtR.broadcastActivity('track:added', 'no actor', undefined);
+  eq('SC128.a broadcastActivity returns null when no actor', sc128Result, null);
+  // Channel must still have been opened (presence subscribers work even logged out)
+  tr('SC128.b channel still created (for receive-only)', !!sc128.channels['activity:degzzy_main']);
+  eq('SC128.c no send happened', sc128.channels['activity:degzzy_main']._sent.length, 0);
 })();
 
 // ---------------------------------------------------------------------------

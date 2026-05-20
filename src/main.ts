@@ -1038,6 +1038,77 @@ if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
   }, 1500);
 }
 
+// REALTIME-1: register presence + broadcast + activity feed. Lazily —
+// only after we have a Supabase client (window.sb) and an actor.
+import {
+  registerRealtime,
+  broadcastActivity as rtBroadcast,
+  subscribeActivityFeed as rtSubscribeFeed,
+  subscribePresence as rtSubscribePresence,
+  getOnlineCount as rtOnlineCount,
+  type RealtimeChannel,
+  type PresenceUser,
+} from './features/realtime';
+
+type RealtimeLegacyGlobals = {
+  sb?: { channel: (name: string, opts?: unknown) => RealtimeChannel };
+  _currentUser?: { id?: string } | null;
+  _currentProfile?: { id?: string; name?: string; role?: string } | null;
+  _presence?: { ids?: Set<string>; users?: Record<string, PresenceUser> };
+  toast?: (msg: string) => void;
+};
+
+let _realtimeBooted = false;
+function _bootRealtimeOnce(): void {
+  if (_realtimeBooted) return;
+  const w = window as unknown as RealtimeLegacyGlobals;
+  if (!w.sb || typeof w.sb.channel !== 'function') return;
+  if (!w._currentUser || !w._currentUser.id) return;
+  _realtimeBooted = true;
+  registerRealtime({
+    createChannel: (name, opts) => w.sb!.channel(name, opts),
+    getActor: () => {
+      const u = (window as unknown as RealtimeLegacyGlobals)._currentUser;
+      const p = (window as unknown as RealtimeLegacyGlobals)._currentProfile;
+      if (!u || !u.id) return null;
+      return { id: u.id, name: (p && p.name) || 'Anonyme', role: (p && p.role) || undefined };
+    },
+    getPresenceMap: () => {
+      const pres = (window as unknown as RealtimeLegacyGlobals)._presence;
+      return (pres && pres.users) || null;
+    },
+    toast: (msg) => {
+      const ww = window as unknown as RealtimeLegacyGlobals;
+      if (typeof ww.toast === 'function') ww.toast(msg);
+    },
+  });
+}
+// Try to boot on every save (which fires after auth + workspace load). Cheap
+// no-op once booted.
+{
+  const prevSave = (window as { save?: () => void }).save;
+  (window as { save?: () => void }).save = () => {
+    _bootRealtimeOnce();
+    if (typeof prevSave === 'function') prevSave();
+  };
+}
+
+// Window re-attach: surface for inline catalogue/calendar to fire activity
+// broadcasts when they mutate. Failsafe — no-op until realtime booted.
+type RealtimeWindow = {
+  broadcastActivity?: typeof rtBroadcast;
+  subscribeActivityFeed?: typeof rtSubscribeFeed;
+  subscribeRealtimePresence?: typeof rtSubscribePresence;
+  getOnlineCount?: typeof rtOnlineCount;
+};
+{
+  const rw = window as unknown as RealtimeWindow;
+  rw.broadcastActivity = rtBroadcast;
+  rw.subscribeActivityFeed = rtSubscribeFeed;
+  rw.subscribeRealtimePresence = rtSubscribePresence;
+  rw.getOnlineCount = rtOnlineCount;
+}
+
 // Window mirrors — legacy inline still uses these names.
 window.loadWorkspaceFromCloud = loadWorkspace;
 window.deepMerge = deepMergeWorkspace as typeof window.deepMerge;
