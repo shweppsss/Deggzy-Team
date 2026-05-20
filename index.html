@@ -11514,39 +11514,19 @@ function cycleStatus(id) {
   renderCatalogue();
 }
 
+/* Track CRUD — EXTRACTED in Phase TS-21 to /src/features/tracks/.
+   addTrack / deleteTrack / clearAudio (here), swipeDeleteTrack (below),
+   updateTrackField + deleteTrackDetail (in the detail section). The TS
+   module owns validation + rollback + cache cleanup. Inline shims below
+   forward to the TS exports re-attached on window by main.ts. */
 function addTrack() {
-  const id = 't' + Date.now();
-  state.tracks.push({ id, name: 'Nouveau morceau', releaseDate: '', status: 'produit', bpm: '', duration: '', feat: '', notes: '', cover: null, audio: null });
-  save();
-  renderCatalogue();
+  if (typeof window.addTrack === 'function' && window.addTrack !== addTrack) return window.addTrack();
 }
-
 function deleteTrack(id) {
-  if (!confirm('Supprimer ce morceau ?')) return;
-  state.tracks = state.tracks.filter(x => x.id !== id);
-  // Clean up IDB media to free space
-  idbDeleteAudio('track_' + id).catch(() => {});
-  idbDeleteCover(id).catch(() => {});
-  clearAudioCache(id);
-  clearCoverCache(id);
-  save();
-  renderCatalogue();
+  if (typeof window.deleteTrack === 'function' && window.deleteTrack !== deleteTrack) return window.deleteTrack(id);
 }
-
-async function clearAudio(id) {
-  const t = state.tracks.find(x => x.id === id);
-  if (!t) return;
-  if (!confirm('Retirer l\'audio de ce morceau ?')) return;
-  t.audio = null;
-  if (t.idbAudio) {
-    try { await idbDeleteAudio('track_' + id); } catch (e) {}
-    t.idbAudio = false;
-    t.audioMeta = null;
-    clearAudioCache(id);
-  }
-  save();
-  renderCatalogue();
-  toast('Audio retiré.');
+function clearAudio(id) {
+  if (typeof window.clearAudio === 'function' && window.clearAudio !== clearAudio) return window.clearAudio(id);
 }
 
 // escapeHtml — EXTRACTED in Phase TS-8 to /src/lib/format-utils.ts.
@@ -11621,16 +11601,10 @@ function attachSwipeDelete(el, deleteFn) {
   el.addEventListener('touchcancel', onEnd);
 }
 
-// Delete helpers that bypass confirm (swipe is the confirmation)
+// swipeDeleteTrack — EXTRACTED in Phase TS-21 to /src/features/tracks/mutations.ts.
+// Bypasses confirm (swipe is the confirmation) + toasts on success.
 function swipeDeleteTrack(id) {
-  state.tracks = state.tracks.filter(x => x.id !== id);
-  idbDeleteAudio('track_' + id).catch(() => {});
-  idbDeleteCover(id).catch(() => {});
-  clearAudioCache(id);
-  clearCoverCache(id);
-  save();
-  renderCatalogue();
-  toast('Morceau supprimé.');
+  if (typeof window.swipeDeleteTrack === 'function' && window.swipeDeleteTrack !== swipeDeleteTrack) return window.swipeDeleteTrack(id);
 }
 function swipeDeleteTodo(id) {
   state.todos = state.todos.filter(x => x.id !== id);
@@ -14150,12 +14124,12 @@ function deleteEventDetail(id) {
 }
 
 // detailTrackHTML — EXTRACTED in Phase TS-7 to /src/features/detail/render/track.ts.
-// Pure renderer (entity, deps, ctx) => string. Called by lifecycle.ts.
+// updateTrackField — EXTRACTED in Phase TS-21 to /src/features/tracks/mutations.ts
+// (with field-allow-list validation + rollback on synchronous throw).
 function updateTrackField(id, field, v) {
-  const t = state.tracks.find(x => x.id === id);
-  if (!t) return;
-  t[field] = v;
-  save();
+  if (typeof window.updateTrackField === 'function' && window.updateTrackField !== updateTrackField) {
+    return window.updateTrackField(id, field, v);
+  }
 }
 async function handleDetailCover(id, ev) {
   const f = ev.target.files[0]; if (!f) return;
@@ -14224,12 +14198,12 @@ async function handleDetailAudio(id, ev) {
     openDetail('track', id);
   }
 }
+// deleteTrackDetail — EXTRACTED in Phase TS-21 to /src/features/tracks/mutations.ts.
+// Detail-overlay delete path: confirm → filter → save → closeDetail → renderAll.
 function deleteTrackDetail(id) {
-  if (!confirm('Supprimer ce morceau ?')) return;
-  state.tracks = state.tracks.filter(x => x.id !== id);
-  save();
-  closeDetail();
-  renderAll();
+  if (typeof window.deleteTrackDetail === 'function' && window.deleteTrackDetail !== deleteTrackDetail) {
+    return window.deleteTrackDetail(id);
+  }
 }
 
 function addEventForTrack(trackId) {

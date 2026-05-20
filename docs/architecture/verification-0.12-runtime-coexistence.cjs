@@ -4355,6 +4355,155 @@ tr('SC110.g all fills go back to 0.00%', _sc110Pills[0]._fill.style.width === '0
 global.document.querySelectorAll = _originalQSA;
 void t1HtmlBefore; // unused but intentional
 
+// ===========================================================================
+// TS-21 — TRACK CRUD SCENARIOS (SC111..SC117)
+// ===========================================================================
+//
+// Mutations carry the orchestration: validate → snapshot → patch → save →
+// render → cache cleanup → rollback on synchronous throw. The harness
+// drives them with a mock state container + spy deps.
+// ---------------------------------------------------------------------------
+const _tracksR = _bundleFeatureDir('tracks');
+
+function _makeTrackHarness(initialTracks = []) {
+  const tracks = initialTracks.slice();
+  const calls = {
+    save: 0, renderCatalogue: 0, renderAll: 0, closeDetail: 0,
+    confirmCalls: 0, toasts: [],
+    idbDeleteAudio: [], idbDeleteCover: [],
+    clearAudioCache: [], clearCoverCache: [],
+  };
+  let confirmResult = true;
+  let saveShouldThrow = false;
+  const deps = {
+    getTracks: () => tracks,
+    replaceTracks: (next) => { tracks.length = 0; for (const t of next) tracks.push(t); },
+    save: () => { calls.save++; if (saveShouldThrow) throw new Error('save failed'); },
+    renderCatalogue: () => { calls.renderCatalogue++; },
+    renderAll: () => { calls.renderAll++; },
+    confirm: () => { calls.confirmCalls++; return confirmResult; },
+    toast: (msg) => { calls.toasts.push(msg); },
+    closeDetail: () => { calls.closeDetail++; },
+    clearAudioCache: (id) => { calls.clearAudioCache.push(id); },
+    clearCoverCache: (id) => { calls.clearCoverCache.push(id); },
+    idbDeleteAudio: async (key) => { calls.idbDeleteAudio.push(key); },
+    idbDeleteCover: async (key) => { calls.idbDeleteCover.push(key); },
+    now: () => 1700000000000,
+  };
+  return {
+    tracks, calls, deps,
+    setConfirm: (v) => { confirmResult = v; },
+    setSaveThrows: (v) => { saveShouldThrow = v; },
+  };
+}
+
+// SCENARIO 111 — createTrack adds a row with safe defaults + unique id
+console.log('\n=== SCENARIO 111 — createTrack (TS-21) ===');
+const sc111 = _makeTrackHarness();
+_tracksR.registerTracks(sc111.deps);
+const sc111Id = _tracksR.createTrack();
+eq('SC111.a createTrack returns the new id', sc111Id, 't1700000000000');
+eq('SC111.b state.tracks now has 1 row', sc111.tracks.length, 1);
+eq('SC111.c new track id matches return value', sc111.tracks[0].id, sc111Id);
+eq('SC111.d new track name is "Nouveau morceau"', sc111.tracks[0].name, 'Nouveau morceau');
+eq('SC111.e new track status is "produit"', sc111.tracks[0].status, 'produit');
+eq('SC111.f save() called once', sc111.calls.save, 1);
+eq('SC111.g renderCatalogue() called once', sc111.calls.renderCatalogue, 1);
+
+// SCENARIO 112 — confirm=false → deleteTrack is a no-op (state unchanged)
+console.log('\n=== SCENARIO 112 — deleteTrack with confirm=false (TS-21) ===');
+const sc112 = _makeTrackHarness([{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]);
+_tracksR.registerTracks(sc112.deps);
+sc112.setConfirm(false);
+const sc112Result = _tracksR.deleteTrack('a');
+eq('SC112.a deleteTrack returns false when user declines', sc112Result, false);
+eq('SC112.b confirm was called once', sc112.calls.confirmCalls, 1);
+eq('SC112.c state.tracks unchanged (still 2 rows)', sc112.tracks.length, 2);
+eq('SC112.d no save call', sc112.calls.save, 0);
+eq('SC112.e no idbDeleteAudio call', sc112.calls.idbDeleteAudio.length, 0);
+
+// SCENARIO 113 — confirm=true → full delete flow fires
+console.log('\n=== SCENARIO 113 — deleteTrack happy path (TS-21) ===');
+const sc113 = _makeTrackHarness([{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]);
+_tracksR.registerTracks(sc113.deps);
+sc113.setConfirm(true);
+_tracksR.deleteTrack('a');
+eq('SC113.a state.tracks filtered (1 row)', sc113.tracks.length, 1);
+eq('SC113.b remaining row is "b"', sc113.tracks[0].id, 'b');
+eq('SC113.c save called', sc113.calls.save, 1);
+eq('SC113.d renderCatalogue called', sc113.calls.renderCatalogue, 1);
+tr('SC113.e idbDeleteAudio("track_a") called', sc113.calls.idbDeleteAudio.includes('track_a'));
+tr('SC113.f idbDeleteCover("a") called', sc113.calls.idbDeleteCover.includes('a'));
+tr('SC113.g clearAudioCache("a") called', sc113.calls.clearAudioCache.includes('a'));
+tr('SC113.h clearCoverCache("a") called', sc113.calls.clearCoverCache.includes('a'));
+
+// SCENARIO 114 — swipeDeleteTrack bypasses confirm + toasts
+console.log('\n=== SCENARIO 114 — swipeDeleteTrack (TS-21) ===');
+const sc114 = _makeTrackHarness([{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]);
+_tracksR.registerTracks(sc114.deps);
+sc114.setConfirm(false); // even with confirm=false, swipe should NOT call it
+const sc114Result = _tracksR.swipeDeleteTrack('a');
+eq('SC114.a swipeDeleteTrack returns true', sc114Result, true);
+eq('SC114.b confirm() NEVER called', sc114.calls.confirmCalls, 0);
+eq('SC114.c state.tracks filtered (1 row)', sc114.tracks.length, 1);
+tr('SC114.d toast fired with "Morceau supprimé."', sc114.calls.toasts.includes('Morceau supprimé.'));
+// non-existent id → no-op
+const sc114Missing = _tracksR.swipeDeleteTrack('nonexistent');
+eq('SC114.e swipeDeleteTrack returns false on missing id', sc114Missing, false);
+eq('SC114.f no extra toast on missing id', sc114.calls.toasts.length, 1);
+
+// SCENARIO 115 — updateTrackField writes + saves
+console.log('\n=== SCENARIO 115 — updateTrackField (TS-21) ===');
+const sc115 = _makeTrackHarness([{ id: 'a', name: 'Old' }]);
+_tracksR.registerTracks(sc115.deps);
+const sc115Result = _tracksR.updateTrackField('a', 'name', 'New');
+eq('SC115.a returns true on success', sc115Result, true);
+eq('SC115.b field updated', sc115.tracks[0].name, 'New');
+eq('SC115.c save called', sc115.calls.save, 1);
+eq('SC115.d no renderCatalogue (field update is silent UI)', sc115.calls.renderCatalogue, 0);
+// disallowed field is rejected
+const sc115Bad = _tracksR.updateTrackField('a', 'id', 'hacked');
+eq('SC115.e updateTrackField("id", ...) rejected', sc115Bad, false);
+eq('SC115.f id unchanged', sc115.tracks[0].id, 'a');
+// unknown field rejected
+const sc115Unknown = _tracksR.updateTrackField('a', '__proto__', 'pwn');
+eq('SC115.g unknown field rejected', sc115Unknown, false);
+
+// SCENARIO 116 — non-existent track → no-op
+console.log('\n=== SCENARIO 116 — operations on missing track (TS-21) ===');
+const sc116 = _makeTrackHarness([{ id: 'a', name: 'A' }]);
+_tracksR.registerTracks(sc116.deps);
+const sc116Update = _tracksR.updateTrackField('nonexistent', 'name', 'X');
+eq('SC116.a updateTrackField on missing id → false', sc116Update, false);
+eq('SC116.b state.tracks unchanged', sc116.tracks.length, 1);
+eq('SC116.c save NOT called', sc116.calls.save, 0);
+// deleteTrack on missing id with confirm=true → confirm is called but nothing else changes
+sc116.setConfirm(true);
+const sc116Delete = _tracksR.deleteTrack('nonexistent');
+// Note: the inline behaviour calls confirm even on missing id. We mirror that.
+tr('SC116.d deleteTrack on missing id is harmless', sc116.tracks.length === 1);
+
+// SCENARIO 117 — Rollback on synchronous save() throw
+console.log('\n=== SCENARIO 117 — rollback on save() throw (TS-21) ===');
+const sc117 = _makeTrackHarness([{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]);
+_tracksR.registerTracks(sc117.deps);
+sc117.setSaveThrows(true);
+const sc117Snapshot = sc117.tracks.slice();
+// createTrack: should attempt to add then roll back
+const sc117CreateResult = _tracksR.createTrack();
+eq('SC117.a createTrack returns null on save throw', sc117CreateResult, null);
+eq('SC117.b state.tracks rolled back to original length', sc117.tracks.length, sc117Snapshot.length);
+tr('SC117.c rollback preserved both original ids', sc117.tracks[0].id === 'a' && sc117.tracks[1].id === 'b');
+// swipeDeleteTrack with save throwing: state rolled back, no toast
+sc117.setSaveThrows(true);
+const sc117DelResult = _tracksR.swipeDeleteTrack('a');
+eq('SC117.d swipeDeleteTrack returns false on save throw', sc117DelResult, false);
+eq('SC117.e state.tracks still has both rows', sc117.tracks.length, 2);
+tr('SC117.f rollback preserved original "a"', sc117.tracks.some((t) => t.id === 'a'));
+// no toast on failure
+const sc117Toasts = sc117.calls.toasts.filter((t) => t.includes('supprimé'));
+eq('SC117.g no "supprimé" toast on rollback', sc117Toasts.length, 0);
+
 // ---------------------------------------------------------------------------
 // SUMMARY — runs AFTER the TS-18/TS-19 await blocks complete.
 // ---------------------------------------------------------------------------

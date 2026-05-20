@@ -1223,6 +1223,91 @@ registerTodosSideEffects({
 registerSectionRenderer(TODOS_SECTION, () => {
   renderTodosView(_buildTodoDeps());
 });
+// TS-21 — Track CRUD orchestration. createTrack / updateTrackField /
+// deleteTrack / swipeDeleteTrack / clearAudio / deleteTrackDetail —
+// every mutation goes through this module, with rollback on synchronous
+// throw, IDB + URL cache cleanup on delete, and validation. Zero
+// `window.X` in /src/features/tracks/.
+import {
+  registerTracks,
+  createTrack as tracksCreate,
+  updateTrackField as tracksUpdateField,
+  deleteTrack as tracksDelete,
+  deleteTrackDetail as tracksDeleteDetail,
+  swipeDeleteTrack as tracksSwipeDelete,
+  clearAudio as tracksClearAudio,
+  type TrackDeps as _TrackDeps,
+  type Track as _Track,
+} from './features/tracks';
+
+type TrackLegacyGlobals = {
+  state?: { tracks?: _Track[] };
+  save?: () => void;
+  renderCatalogue?: () => void;
+  renderAll?: () => void;
+  toast?: (msg: string) => void;
+  closeDetail?: () => void;
+};
+
+registerTracks({
+  getTracks: () => {
+    const w = window as unknown as TrackLegacyGlobals;
+    return (w.state && Array.isArray(w.state.tracks)) ? w.state.tracks : [];
+  },
+  replaceTracks: (next) => {
+    const w = window as unknown as TrackLegacyGlobals;
+    if (w.state) w.state.tracks = next;
+  },
+  save: () => {
+    const w = window as unknown as TrackLegacyGlobals;
+    if (typeof w.save === 'function') w.save();
+  },
+  renderCatalogue: () => {
+    const w = window as unknown as TrackLegacyGlobals;
+    if (typeof w.renderCatalogue === 'function') w.renderCatalogue();
+  },
+  renderAll: () => {
+    const w = window as unknown as TrackLegacyGlobals;
+    if (typeof w.renderAll === 'function') w.renderAll();
+  },
+  confirm: (msg) => (typeof confirm === 'function' ? confirm(msg) : true),
+  toast: (msg) => {
+    const w = window as unknown as TrackLegacyGlobals;
+    if (typeof w.toast === 'function') w.toast(msg);
+  },
+  closeDetail: () => {
+    const w = window as unknown as TrackLegacyGlobals;
+    if (typeof w.closeDetail === 'function') w.closeDetail();
+  },
+  clearAudioCache: (id) => cacheClearAudio(id),
+  clearCoverCache: (id) => cacheClearCover(id),
+  idbDeleteAudio: (key) => cacheIdbDeleteAudio(key),
+  idbDeleteCover: (key) => cacheIdbDeleteCover(key),
+  now: () => Date.now(),
+});
+
+// Re-attach the public mutation surface on window so the inline shims
+// (and onclick="addTrack()" attributes in templates) keep working.
+type TrackWindow = {
+  addTrack?: () => string | null;
+  createTrack?: typeof tracksCreate;
+  updateTrackField?: typeof tracksUpdateField;
+  deleteTrack?: typeof tracksDelete;
+  deleteTrackDetail?: typeof tracksDeleteDetail;
+  swipeDeleteTrack?: typeof tracksSwipeDelete;
+  clearAudio?: typeof tracksClearAudio;
+};
+{
+  const tw = window as unknown as TrackWindow;
+  tw.addTrack = () => tracksCreate();
+  tw.createTrack = tracksCreate;
+  tw.updateTrackField = tracksUpdateField;
+  tw.deleteTrack = tracksDelete;
+  tw.deleteTrackDetail = tracksDeleteDetail;
+  tw.swipeDeleteTrack = tracksSwipeDelete;
+  tw.clearAudio = tracksClearAudio;
+}
+
 // TS-15 — catalogue via TS render pipeline.
 // TS-20 — `trackAudioInitialHTML` is now a direct TS import (no window hop).
 function _buildCatalogueDeps(): _CatalogueDeps {
