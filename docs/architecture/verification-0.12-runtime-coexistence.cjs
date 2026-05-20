@@ -3318,6 +3318,141 @@ const _sc77ViaCapsules = _capsulesR.buildCapsulesView({ items: _sc77Items }, _vi
 eq('SC77.a capsules barrel produces same HTML as clips shared module', _sc77ViaCapsules, _sc77ViaClips);
 eq('SC77.b CAPSULES_SECTION constant === "capsules"', _capsulesR.CAPSULES_SECTION, 'capsules');
 
+// ===========================================================================
+// TS-15 — PLAN / KPI / BUDGET / CATALOGUE SCENARIOS (SC78..SC83)
+// ===========================================================================
+function _bundle(p) {
+  const r = esbuild.buildSync({
+    entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', p, 'index.ts')],
+    bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+    write: false, logLevel: 'silent',
+  });
+  const m = { exports: {} };
+  (function (module, exports, require) { eval(r.outputFiles[0].text); })(m, m.exports, require);
+  return m.exports;
+}
+const _planR = _bundle('plan');
+const _kpiR = _bundle('kpi');
+const _budgetR = _bundle('budget');
+const _catalogueR = _bundle('catalogue');
+
+// ===========================================================================
+// SCENARIO 78 — Plan renderer determinism + structure
+// ===========================================================================
+console.log('\n=== SCENARIO 78 — plan render determinism (TS-15) ===');
+const _sc78Phases = [
+  { label: 'P0', dates: 'mai', title: 'Pre-Launch', desc: 'Setup', items: ['a','b','c','d'] },
+  { label: 'P1', dates: 'juin', title: 'Rollout', desc: 'Drops', items: ['x','y'] },
+];
+const _sc78First = _planR.buildPlanView({ phases: _sc78Phases });
+let _sc78Same = true;
+for (let i = 0; i < 100; i++) {
+  if (_planR.buildPlanView({ phases: _sc78Phases }) !== _sc78First) { _sc78Same = false; break; }
+}
+tr('SC78.a 100 plan renders → identical HTML', _sc78Same);
+eq('SC78.b 2 phase cards', (_sc78First.match(/class="phase"/g) || []).length, 2);
+tr('SC78.c "+ more" suffix appears for items > 3', _sc78First.includes('de plus → cliquer'));
+
+// ===========================================================================
+// SCENARIO 79 — KPI renderer empty + content
+// ===========================================================================
+console.log('\n=== SCENARIO 79 — KPI render (TS-15) ===');
+const _sc79Empty = _kpiR.buildKpiView([]);
+tr('SC79.a empty kpis → empty=true', _sc79Empty.empty === true);
+const _sc79Rows = [
+  { label: 'Streams', value: '0', target: '50k' },
+  { label: 'Saves', value: '12', target: '500' },
+];
+const _sc79Result = _kpiR.buildKpiView(_sc79Rows);
+eq('SC79.b 2 kpi cards', (_sc79Result.html.match(/class="kpi-card"/g) || []).length, 2);
+tr('SC79.c includes label text', _sc79Result.html.includes('Streams'));
+
+// ===========================================================================
+// SCENARIO 80 — Budget computeTotals correctness
+// ===========================================================================
+console.log('\n=== SCENARIO 80 — budget computeTotals (TS-15) ===');
+const _sc80Budget = {
+  total: 10000,
+  transactions: [
+    { id: 't1', date: '2026-05-01', label: 'Studio', cat: 'Studio', amount: 1200 },
+    { id: 't2', date: '2026-05-05', label: 'Cover', cat: 'Visuel', amount: 800 },
+    { id: 't3', date: '2026-05-10', label: 'Promo', cat: 'Marketing', amount: 500 },
+  ],
+};
+const _sc80T = _budgetR.computeTotals(_sc80Budget);
+eq('SC80.a total', _sc80T.total, 10000);
+eq('SC80.b spent', _sc80T.spent, 2500);
+eq('SC80.c remaining', _sc80T.remaining, 7500);
+eq('SC80.d pct', _sc80T.pct, 25);
+
+// Spend-by-category bucket
+const _sc80By = _budgetR.spendByCategory(_sc80Budget, ['Studio', 'Visuel', 'Marketing', 'Autre']);
+eq('SC80.e by-cat Studio', _sc80By.Studio, 1200);
+eq('SC80.f by-cat Autre = 0', _sc80By.Autre, 0);
+
+// ===========================================================================
+// SCENARIO 81 — Budget render idempotence
+// ===========================================================================
+console.log('\n=== SCENARIO 81 — budget render idempotence (TS-15) ===');
+const _sc81Deps = {
+  categories: ['Studio', 'Visuel', 'Marketing', 'Autre'],
+  splitRoles: ['Artiste', 'Manager'],
+  getSplitsForTrack: () => [],
+};
+const _sc81Model = { budget: _sc80Budget, tracks: [{ id: 'tr1', name: 'Track 1' }] };
+const _sc81First = _budgetR.buildBudgetView(_sc81Model, _sc81Deps);
+let _sc81Same = true;
+for (let i = 0; i < 100; i++) {
+  if (JSON.stringify(_budgetR.buildBudgetView(_sc81Model, _sc81Deps)) !== JSON.stringify(_sc81First)) {
+    _sc81Same = false; break;
+  }
+}
+tr('SC81.a 100 budget renders → identical', _sc81Same);
+tr('SC81.b heroHtml contains "10000"', _sc81First.heroHtml.includes('10000'));
+tr('SC81.c txHtml lists 3 transactions', (_sc81First.txHtml.match(/class="tx-item(?:"| )/g) || []).length === 4); // 1 head + 3 rows
+tr('SC81.d splitsHtml renders one card per track', _sc81First.splitsHtml.includes('Track 1'));
+
+// ===========================================================================
+// SCENARIO 82 — Catalogue render idempotence
+// ===========================================================================
+console.log('\n=== SCENARIO 82 — catalogue render (TS-15) ===');
+const _sc82Deps = {
+  escapeHtml: (s) => String(s == null ? '' : s),
+  formatDate: (s) => s || '',
+  statusLabel: (s) => s || '',
+  trackAudioInitialHTML: () => '<div class="audio-slot"></div>',
+};
+const _sc82Tracks = [
+  { id: 'tr1', name: 'First', status: 'sorti', releaseDate: '2026-05-01', duration: '3:24' },
+  { id: 'tr2', name: 'Second', status: 'masterise', duration: '2:50', bpm: '128' },
+];
+const _sc82First = _catalogueR.buildCatalogueView({ tracks: _sc82Tracks }, _sc82Deps);
+let _sc82Same = true;
+for (let i = 0; i < 100; i++) {
+  if (JSON.stringify(_catalogueR.buildCatalogueView({ tracks: _sc82Tracks }, _sc82Deps)) !== JSON.stringify(_sc82First)) {
+    _sc82Same = false; break;
+  }
+}
+tr('SC82.a 100 catalogue renders → identical', _sc82Same);
+eq('SC82.b 2 track cards', (_sc82First.gridHtml.match(/class="track-card"/g) || []).length, 2);
+tr('SC82.c empty tracks → empty=true', _catalogueR.buildCatalogueView({ tracks: [] }, _sc82Deps).empty === true);
+
+// ===========================================================================
+// SCENARIO 83 — Input mutation rollback for all TS-15 renderers
+// ===========================================================================
+console.log('\n=== SCENARIO 83 — TS-15 input mutation rollback ===');
+const _sc83PlanSnap = JSON.stringify(_sc78Phases);
+const _sc83BudgetSnap = JSON.stringify(_sc80Budget);
+const _sc83CatalogueSnap = JSON.stringify(_sc82Tracks);
+for (let i = 0; i < 10; i++) {
+  _planR.buildPlanView({ phases: _sc78Phases });
+  _budgetR.computeTotals(_sc80Budget);
+  _catalogueR.buildCatalogueView({ tracks: _sc82Tracks }, _sc82Deps);
+}
+eq('SC83.a plan input not mutated', JSON.stringify(_sc78Phases), _sc83PlanSnap);
+eq('SC83.b budget input not mutated', JSON.stringify(_sc80Budget), _sc83BudgetSnap);
+eq('SC83.c catalogue input not mutated', JSON.stringify(_sc82Tracks), _sc83CatalogueSnap);
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------

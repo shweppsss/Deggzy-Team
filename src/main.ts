@@ -181,6 +181,25 @@ import {
   type TeamDeps as _TeamDeps,
 } from './render/team';
 import { renderCapsulesView } from './render/capsules';
+// TS-15 — final batch of simple renderers.
+import { renderPlanView, type PlanPhase, type PlanDeps as _PlanDeps } from './render/plan';
+import { renderKpiView } from './render/kpi';
+import {
+  renderBudgetView,
+  type BudgetDeps as _BudgetDeps,
+  type SplitContrib,
+} from './render/budget';
+import {
+  renderCatalogueView,
+  registerCatalogueSideEffects,
+  type CatalogueDeps as _CatalogueDeps,
+  type CatalogueTrack,
+} from './render/catalogue';
+import {
+  renderProfileView,
+  registerProfileSideEffects,
+  type ProfileViewModel as _ProfileVm,
+} from './render/profile';
 import {
   // session
   getCurrentUser,
@@ -864,7 +883,58 @@ registerSectionRenderer(DASHBOARD_SECTION, () => {
 // TS-14D — team shim + capsules through the new alias.
 (window as unknown as { renderTeamTS?: () => void }).renderTeamTS = () => renderTeamView(_buildTeamDeps());
 void renderCapsulesView; // alias re-exported for symmetry; same code path as window.renderCapsulesTS above.
-registerSectionRenderer('profile',             callInlineRender('renderProfile'));
+// TS-15 — shims for the inline render*() wrappers.
+(window as unknown as { renderPlanTS?: () => void }).renderPlanTS = () => renderPlanView(_buildPlanDeps());
+(window as unknown as { renderKPITS?: () => void }).renderKPITS = () => renderKpiView();
+(window as unknown as { renderBudgetTS?: () => void }).renderBudgetTS = () => renderBudgetView(_buildBudgetDeps());
+(window as unknown as { renderCatalogueTS?: () => void }).renderCatalogueTS = () => renderCatalogueView(_buildCatalogueDeps());
+(window as unknown as { renderProfileTS?: () => void }).renderProfileTS = () => renderProfileView();
+// TS-15 — profile renderer (dispatcher only; sub-widgets stay inline as hooks).
+registerProfileSideEffects({
+  getViewModel: () => {
+    const w = window as unknown as { _getProfileViewModel?: () => _ProfileVm };
+    return typeof w._getProfileViewModel === 'function' ? w._getProfileViewModel() : ({ name: '', alias: '', roleLabel: '' } as _ProfileVm);
+  },
+  relativeSinceLong: (iso) => {
+    const w = window as unknown as { _relativeSinceLong?: (s: string | undefined) => string };
+    return typeof w._relativeSinceLong === 'function' ? w._relativeSinceLong(iso) : (iso || '');
+  },
+  renderStats: (vm) => {
+    const w = window as unknown as { renderProfileStats?: (vm: _ProfileVm) => void };
+    if (typeof w.renderProfileStats === 'function') w.renderProfileStats(vm);
+  },
+  renderActivity: (vm) => {
+    const w = window as unknown as { renderProfileActivity?: (vm: _ProfileVm) => void };
+    if (typeof w.renderProfileActivity === 'function') w.renderProfileActivity(vm);
+  },
+  renderSkills: (vm) => {
+    const w = window as unknown as { renderProfileSkills?: (vm: _ProfileVm) => void };
+    if (typeof w.renderProfileSkills === 'function') w.renderProfileSkills(vm);
+  },
+  renderSocials: (vm) => {
+    const w = window as unknown as { renderProfileSocials?: (vm: _ProfileVm) => void };
+    if (typeof w.renderProfileSocials === 'function') w.renderProfileSocials(vm);
+  },
+  renderNotifs: (vm) => {
+    const w = window as unknown as { renderProfileNotifs?: (vm: _ProfileVm) => void };
+    if (typeof w.renderProfileNotifs === 'function') w.renderProfileNotifs(vm);
+  },
+  renderBadges: (vm) => {
+    const w = window as unknown as { renderProfileBadges?: (vm: _ProfileVm) => void };
+    if (typeof w.renderProfileBadges === 'function') w.renderProfileBadges(vm);
+  },
+  hydrateSentryDsnField: () => {
+    const w = window as unknown as { _hydrateSentryDsnField?: () => void };
+    if (typeof w._hydrateSentryDsnField === 'function') w._hydrateSentryDsnField();
+  },
+  refreshProfileAvatar: async (vm) => {
+    const w = window as unknown as { refreshProfileAvatar?: (vm: _ProfileVm) => Promise<void> };
+    if (typeof w.refreshProfileAvatar === 'function') {
+      try { await w.refreshProfileAvatar(vm); } catch (_e) { /* no-op */ }
+    }
+  },
+});
+registerSectionRenderer('profile', () => { renderProfileView(); });
 // TS-14B — todos use the TS render pipeline.
 function _buildTodoDeps(): _TodoDeps {
   type LegacyHelpers = {
@@ -899,7 +969,45 @@ registerTodosSideEffects({
 registerSectionRenderer(TODOS_SECTION, () => {
   renderTodosView(_buildTodoDeps());
 });
-registerSectionRenderer('catalogue',           callInlineRender('renderCatalogue'));
+// TS-15 — catalogue via TS render pipeline.
+function _buildCatalogueDeps(): _CatalogueDeps {
+  type Legacy = { trackAudioInitialHTML?: (t: CatalogueTrack) => string };
+  const w = window as unknown as Legacy;
+  return {
+    escapeHtml: (s: string | null | undefined) => escapeHtml(s),
+    formatDate: (s: string | undefined) => formatDate(s),
+    statusLabel: (s: string | undefined) => statusLabel(s),
+    trackAudioInitialHTML: (t: CatalogueTrack) =>
+      typeof w.trackAudioInitialHTML === 'function' ? w.trackAudioInitialHTML(t) : '',
+  };
+}
+registerCatalogueSideEffects({
+  attachTrackEvents: (id) => {
+    const w = window as unknown as { attachTrackEvents?: (id: string) => void };
+    if (typeof w.attachTrackEvents === 'function') w.attachTrackEvents(id);
+  },
+  attachSwipeDelete: (el, fn) => {
+    const w = window as unknown as { attachSwipeDelete?: (el: HTMLElement, fn: () => void) => void };
+    if (typeof w.attachSwipeDelete === 'function') w.attachSwipeDelete(el, fn);
+  },
+  swipeDeleteTrack: (id) => {
+    const w = window as unknown as { swipeDeleteTrack?: (id: string) => void };
+    if (typeof w.swipeDeleteTrack === 'function') w.swipeDeleteTrack(id);
+  },
+  hydrateAllAudios: async () => {
+    const w = window as unknown as { hydrateAllAudios?: () => Promise<void> };
+    if (typeof w.hydrateAllAudios === 'function') {
+      try { await w.hydrateAllAudios(); } catch (_e) { /* no-op */ }
+    }
+  },
+  hydrateAllCovers: async () => {
+    const w = window as unknown as { hydrateAllCovers?: () => Promise<void> };
+    if (typeof w.hydrateAllCovers === 'function') {
+      try { await w.hydrateAllCovers(); } catch (_e) { /* no-op */ }
+    }
+  },
+});
+registerSectionRenderer('catalogue', () => { renderCatalogueView(_buildCatalogueDeps()); });
 // TS-13C — calendar uses the TS render path. main.ts builds the
 // CalendarDeps snapshot lazily on each render by reading the legacy
 // inline helpers off window.
@@ -1019,9 +1127,31 @@ registerTeamSideEffects({
   },
 });
 registerSectionRenderer(TEAM_SECTION, () => { renderTeamView(_buildTeamDeps()); });
-registerSectionRenderer('budget',              callInlineRender('renderBudget'));
-registerSectionRenderer('plan',                callInlineRender('renderPlan'));
-registerSectionRenderer('kpi',                 callInlineRender('renderKPI'));
+// TS-15 — budget / plan / kpi via TS render pipeline.
+function _buildBudgetDeps(): _BudgetDeps {
+  type Legacy = {
+    BUDGET_CATEGORIES?: ReadonlyArray<string>;
+    SPLIT_ROLES?: ReadonlyArray<string>;
+    getSplitsArray?: (trackId: string) => SplitContrib[];
+  };
+  const w = window as unknown as Legacy;
+  return {
+    categories: Array.isArray(w.BUDGET_CATEGORIES) ? w.BUDGET_CATEGORIES : [],
+    splitRoles: Array.isArray(w.SPLIT_ROLES) ? w.SPLIT_ROLES : [],
+    getSplitsForTrack: (trackId) =>
+      typeof w.getSplitsArray === 'function' ? w.getSplitsArray(trackId) : [],
+  };
+}
+registerSectionRenderer('budget', () => { renderBudgetView(_buildBudgetDeps()); });
+
+function _buildPlanDeps(): _PlanDeps {
+  type Legacy = { PHASES?: ReadonlyArray<PlanPhase> };
+  const w = window as unknown as Legacy;
+  return { phases: Array.isArray(w.PHASES) ? w.PHASES : [] };
+}
+registerSectionRenderer('plan', () => { renderPlanView(_buildPlanDeps()); });
+
+registerSectionRenderer('kpi', () => { renderKpiView(); });
 
 // Profile's special-case post-render hook (`setupProfileAliasEdit`).
 registerPostRouteHook('profile', () => {

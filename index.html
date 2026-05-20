@@ -11339,17 +11339,11 @@ function filterVisibleTodos(todos) { return Array.isArray(todos) ? todos.filter(
 /* ============================
    CATALOGUE
    ============================ */
+// renderCatalogue — EXTRACTED in Phase TS-15 to /src/render/catalogue/.
+// Audio + cover hydration + attach-events are wired as side-effect hooks
+// from main.ts (still inline functions, called by the TS render module).
 function renderCatalogue() {
-  const grid = document.getElementById('tracksGrid');
-  grid.innerHTML = state.tracks.map(t => trackCardHTML(t)).join('');
-
-  state.tracks.forEach(t => {
-    attachTrackEvents(t.id);
-    const card = document.querySelector(`.track-card[data-id="${t.id}"]`);
-    if (card) attachSwipeDelete(card, () => swipeDeleteTrack(t.id));
-  });
-  hydrateAllAudios();
-  hydrateAllCovers();
+  if (typeof window.renderCatalogueTS === 'function') return window.renderCatalogueTS();
 }
 
 async function hydrateAllCovers() {
@@ -11725,32 +11719,7 @@ function formatBytes(bytes) {
   return (bytes / Math.pow(k, i)).toFixed(i ? 1 : 0) + ' ' + units[i];
 }
 
-function trackCardHTML(t) {
-  const hasCover = t.cover || t.idbCover;
-  const coverInline = (t.cover && typeof t.cover === 'string' && t.cover.startsWith('data:')) ? t.cover : '';
-  const dateStr = t.releaseDate ? formatDate(t.releaseDate) : '—';
-  const metaBits = [dateStr];
-  if (t.duration) metaBits.push(t.duration);
-  if (t.bpm) metaBits.push(t.bpm + ' BPM');
-  return `
-    <div class="track-card" data-id="${t.id}" onclick="openDetail('track','${t.id}')">
-      <label class="track-cover ${hasCover ? 'has-image' : ''}" data-cover-for="${t.id}" onclick="event.stopPropagation()" style="${coverInline ? `background-image:url('${coverInline}')` : ''}">
-        <span class="track-cover-hint">${hasCover ? '' : '+ Cover'}</span>
-        <input type="file" accept="image/*" data-field="cover" data-id="${t.id}" />
-      </label>
-      <div class="track-body">
-        <div class="track-head">
-          <div class="track-name">${escapeHtml(t.name)}</div>
-          <div class="status-chip" data-status="${t.status}" onclick="event.stopPropagation(); cycleStatus('${t.id}')">${statusLabel(t.status)}</div>
-        </div>
-        <div class="track-meta-line">${metaBits.join(' · ')}${t.feat ? ' · feat. ' + escapeHtml(t.feat) : ''}</div>
-        <div class="track-audio-slot" data-track-id="${t.id}" onclick="event.stopPropagation()">
-          ${trackAudioInitialHTML(t)}
-        </div>
-      </div>
-    </div>
-  `;
-}
+// trackCardHTML — EXTRACTED in Phase TS-15 to /src/render/catalogue/widgets/track-card.ts.
 
 function attachTrackEvents(id) {
   const card = document.querySelector(`.track-card[data-id="${id}"]`);
@@ -12700,31 +12669,9 @@ const PHASES = [
     items: ['28/08 — Ouverture pre-save R.I.C.H','Tracklist reveal complète','Compte à rebours J-14, J-7, J-3, J-1','Listening party (digital ou physique au studio Noname)','Ven 11/09 — SORTIE PROJET R.I.C.H'] },
 ];
 
-function renderPlan() {
-  const c = document.getElementById('phasesContainer');
-  c.innerHTML = PHASES.map((p, idx) => `
-    <div class="phase" onclick="openDetail('phase',${idx})">
-      <div class="phase-label">${p.label} — ${p.dates}</div>
-      <div class="phase-title">${p.title}</div>
-      <div class="phase-desc">${p.desc}</div>
-      <ul>${p.items.slice(0,3).map(i => `<li>${i}</li>`).join('')}${p.items.length > 3 ? `<li style="opacity:.6;">+ ${p.items.length - 3} de plus → cliquer</li>` : ''}</ul>
-    </div>
-  `).join('');
-}
-
-/* ============================
-   KPI
-   ============================ */
-function renderKPI() {
-  const g = document.getElementById('kpiGrid');
-  g.innerHTML = state.kpis.map((k, i) => `
-    <div class="kpi-card">
-      <div class="kpi-label">${escapeHtml(k.label)}</div>
-      <div class="kpi-value"><input value="${escapeHtml(k.value)}" data-i="${i}" onchange="updateKPI(this, 'value')" /></div>
-      <div class="kpi-target">${escapeHtml(k.target)}</div>
-    </div>
-  `).join('');
-}
+// renderPlan / renderKPI — EXTRACTED in Phase TS-15 to /src/render/plan/ + /src/render/kpi/.
+function renderPlan() { if (typeof window.renderPlanTS === 'function') return window.renderPlanTS(); }
+function renderKPI()  { if (typeof window.renderKPITS  === 'function') return window.renderKPITS();  }
 function updateKPI(el, field) {
   state.kpis[el.dataset.i][field] = el.value;
   save();
@@ -12830,61 +12777,13 @@ function _relativeSinceLong(iso) {
   return 'Membre depuis ' + years + ' ans';
 }
 
+// renderProfile — EXTRACTED in Phase TS-15 to /src/render/profile/.
+// The sub-renderers (Stats / Activity / Skills / Socials / Notifs / Badges /
+// hydrateSentryDsnField / refreshProfileAvatar) remain inline and are
+// invoked through registered side-effects hooks. Migration of each
+// sub-renderer is deferred until its feature is actively touched.
 function renderProfile() {
-  const vm = _getProfileViewModel();
-
-  // Header
-  const nameEl = document.getElementById('profileName');
-  if (nameEl) nameEl.textContent = vm.name;
-  // Alias is contenteditable — same anti-clobber as the textareas below.
-  const aliasEl = document.getElementById('profileAlias');
-  if (aliasEl && document.activeElement !== aliasEl) aliasEl.textContent = vm.alias;
-  const aliasLine = document.getElementById('profileAliasLine');
-  if (aliasLine) aliasLine.style.display = vm.alias ? '' : 'flex'; // always visible — placeholder shows up via :empty::before
-
-  const initialEl = document.getElementById('profileAvatarInitial');
-  if (initialEl) initialEl.textContent = (vm.name || '?').trim().charAt(0).toUpperCase() || '?';
-
-  const roleLabelEl = document.getElementById('profileRoleLabel');
-  if (roleLabelEl) roleLabelEl.textContent = vm.roleLabel;
-  const sinceEl = document.getElementById('profileSince');
-  if (sinceEl) sinceEl.textContent = _relativeSinceLong(vm.since);
-
-  // Editable fields — skip overwriting whichever the user is currently editing.
-  // renderProfile() runs on every renderAll() (realtime sync, badge eval, save
-  // success, etc.) and used to clobber in-progress typing — the user could
-  // type but their deletions seemed to "revert" because the next render fired
-  // before onblur and rewrote the stored value back into the field.
-  const active = document.activeElement;
-  const bioEl = document.getElementById('profileBio');
-  if (bioEl && active !== bioEl) bioEl.value = vm.bio;
-  const emailEl = document.getElementById('profileEmail');
-  if (emailEl && active !== emailEl) emailEl.value = vm.email;
-  const phoneEl = document.getElementById('profilePhone');
-  if (phoneEl && active !== phoneEl) phoneEl.value = vm.phone;
-  const specEl = document.getElementById('profileSpecialty');
-  if (specEl && active !== specEl) specEl.value = vm.specialty;
-  const visEl = document.getElementById('profileActivityVisibility');
-  if (visEl && active !== visEl) visEl.value = vm.activityVisibility;
-
-  // Stats — derived from local state (todos / events created by me)
-  renderProfileStats(vm);
-
-  // Activity — last 5 events created + todos completed by me
-  renderProfileActivity(vm);
-
-  // Skills, socials, notifs — Phase 2A additions
-  renderProfileSkills(vm);
-  renderProfileSocials(vm);
-  renderProfileNotifs(vm);
-  // Badges — Phase 2B-2: shows the user's earned badges + locked silhouettes.
-  renderProfileBadges(vm);
-
-  // Sentry DSN field — pre-populated from localStorage so the user sees what's saved.
-  if (typeof _hydrateSentryDsnField === 'function') _hydrateSentryDsnField();
-
-  // Avatar — load from IDB cache, fall back to Supabase Storage
-  refreshProfileAvatar(vm).catch(e => console.warn('avatar refresh failed:', e));
+  if (typeof window.renderProfileTS === 'function') return window.renderProfileTS();
 }
 
 /* ============================
@@ -14768,92 +14667,9 @@ function hideAuthScreen(cb) {
    ============================ */
 const BUDGET_CATEGORIES = ['Production', 'Visuel', 'Promo', 'Distribution', 'Featurings', 'Autre'];
 
+// renderBudget — EXTRACTED in Phase TS-15 to /src/render/budget/.
 function renderBudget() {
-  const b = state.budget;
-  const total = Number(b.total) || 0;
-  const spent = b.transactions.reduce((s, t) => s + Number(t.amount || 0), 0);
-  const remaining = total - spent;
-  const pct = total > 0 ? Math.min(100, (spent / total) * 100) : 0;
-
-  document.getElementById('budgetHero').innerHTML = `
-    <div class="budget-stat-big">
-      <div class="budget-stat-label">Budget total</div>
-      <div class="budget-stat-value"><input value="${total}" onchange="updateBudgetTotal(this.value)" /> €</div>
-    </div>
-    <div class="budget-stat-big">
-      <div class="budget-stat-label">Dépensé</div>
-      <div class="budget-stat-value danger">${spent.toLocaleString('fr-FR')} €</div>
-    </div>
-    <div class="budget-stat-big">
-      <div class="budget-stat-label">Restant</div>
-      <div class="budget-stat-value ${remaining < 0 ? 'danger' : 'success'}">${remaining.toLocaleString('fr-FR')} €</div>
-    </div>
-    <div class="budget-bar"><div class="budget-bar-fill ${spent > total ? 'over' : ''}" style="width: ${pct}%"></div></div>
-  `;
-
-  // Categories
-  const byCat = {};
-  BUDGET_CATEGORIES.forEach(c => byCat[c] = 0);
-  b.transactions.forEach(t => { byCat[t.cat] = (byCat[t.cat] || 0) + Number(t.amount || 0); });
-  document.getElementById('budgetCats').innerHTML = BUDGET_CATEGORIES.map(c => {
-    const v = byCat[c] || 0;
-    const p = spent > 0 ? (v / spent) * 100 : 0;
-    return `
-      <div class="budget-cat">
-        <div class="budget-cat-name">${c}</div>
-        <div class="budget-cat-value">${v.toLocaleString('fr-FR')} €</div>
-        <div class="budget-cat-bar"><div class="budget-cat-bar-fill" style="width:${p}%"></div></div>
-        <div class="budget-cat-meta"><span>${Math.round(p)}% des dépenses</span><span>${b.transactions.filter(t => t.cat === c).length} entrée(s)</span></div>
-      </div>
-    `;
-  }).join('');
-
-  // Transactions
-  let txHtml = `<div class="tx-item tx-head">
-    <div>Date</div><div>Libellé</div><div class="tx-item-cat-col">Catégorie</div><div style="text-align:right;">Montant</div><div></div>
-  </div>`;
-  txHtml += b.transactions.map(t => `
-    <div class="tx-item" data-id="${t.id}">
-      <input type="date" value="${t.date}" onchange="updateTx('${t.id}','date',this.value)" />
-      <input value="${escapeHtml(t.label)}" onchange="updateTx('${t.id}','label',this.value)" />
-      <select class="tx-item-cat-col" onchange="updateTx('${t.id}','cat',this.value)">
-        ${BUDGET_CATEGORIES.map(c => `<option ${t.cat===c?'selected':''}>${c}</option>`).join('')}
-      </select>
-      <input class="tx-amount" type="number" value="${t.amount}" onchange="updateTx('${t.id}','amount',this.value)" />
-      <button class="tx-del" onclick="deleteTx('${t.id}')" aria-label="Supprimer la transaction" type="button">×</button>
-    </div>
-  `).join('') || '<div class="empty" style="border:none;">Aucune dépense. Clique sur + Dépense pour ajouter.</div>';
-  document.getElementById('txList').innerHTML = txHtml;
-
-  // Splits — new flexible UI : list of contributors per track
-  let splitsHtml = `<div style="font-size: 12px; color: var(--text-soft); margin-bottom: 12px;">Définis qui touche quoi sur chaque morceau. Ajoute autant de contributeurs que tu veux (manager, investisseur, beatmaker, topliner...). Le total doit faire <strong>100 %</strong> pour chaque morceau.</div>`;
-  splitsHtml += state.tracks.map(tr => {
-    const arr = getSplitsArray(tr.id);
-    const total = arr.reduce((s, c) => s + (Number(c.pct) || 0), 0);
-    return `
-      <div class="split-card" data-id="${tr.id}">
-        <div class="split-card-head">
-          <div class="split-card-name">${escapeHtml(tr.name)}</div>
-          <div class="split-card-total ${total === 100 ? 'valid' : 'invalid'}">${total}%</div>
-        </div>
-        <div class="split-contribs">
-          ${arr.map(c => `
-            <div class="split-contrib" data-id="${c.id}">
-              <input class="split-name" value="${escapeHtml(c.name || '')}" placeholder="Nom (ex: Degzzy)" onchange="updateSplitContrib('${tr.id}','${c.id}','name',this.value)" />
-              <select class="split-role" onchange="updateSplitContrib('${tr.id}','${c.id}','role',this.value)">
-                ${SPLIT_ROLES.map(r => `<option ${c.role===r?'selected':''}>${r}</option>`).join('')}
-              </select>
-              <input class="split-pct" type="number" min="0" max="100" value="${c.pct || 0}" onchange="updateSplitContrib('${tr.id}','${c.id}','pct',this.value)" />
-              <span class="split-pct-sign">%</span>
-              <button class="split-del" onclick="removeSplitContrib('${tr.id}','${c.id}')" title="Retirer" aria-label="Retirer le contributeur" type="button">×</button>
-            </div>
-          `).join('')}
-        </div>
-        <button class="split-add" onclick="addSplitContrib('${tr.id}')">+ Ajouter un contributeur (manager, investisseur, beatmaker...)</button>
-      </div>
-    `;
-  }).join('');
-  document.getElementById('splitsTable').innerHTML = splitsHtml;
+  if (typeof window.renderBudgetTS === 'function') return window.renderBudgetTS();
 }
 
 function updateBudgetTotal(v) { state.budget.total = Number(v) || 0; save(); renderBudget(); }
