@@ -407,6 +407,53 @@ window.isFutureOrToday = isFutureOrToday;
 // unchanged after this assignment.
 window.MiniPlayer = MiniPlayer;
 
+// TS-17 — audio state store. Single source of truth for the currently-loaded
+// track + playback timeline. The TS module is imported directly by the
+// MiniPlayer module (no window hop). Legacy inline code (catalogue pills,
+// hydrate fns, detail overlay) still reaches the store via these shims.
+import {
+  getAudioState as audioGetAudioState,
+  subscribeAudio as audioSubscribeAudio,
+  setAudioState as audioSetAudioState,
+  hookAudioToStore as audioHookAudioToStore,
+} from './features/audio';
+type AudioWindow = {
+  getAudioState?: typeof audioGetAudioState;
+  subscribeAudio?: typeof audioSubscribeAudio;
+  _setAudioState?: typeof audioSetAudioState;
+  _hookAudioToStore?: typeof audioHookAudioToStore;
+};
+(window as unknown as AudioWindow).getAudioState = audioGetAudioState;
+(window as unknown as AudioWindow).subscribeAudio = audioSubscribeAudio;
+(window as unknown as AudioWindow)._setAudioState = audioSetAudioState;
+(window as unknown as AudioWindow)._hookAudioToStore = audioHookAudioToStore;
+
+// Bridge to the inline boot snapshot. Inline declares `_audioStateInline`
+// (plain object) and `_syncAllPillsInline` (the reconciler) BEFORE this
+// module runs. We mirror every store update into the inline object so the
+// legacy readers (`_trackAudioPillHTML`, etc.) keep working unchanged, and
+// register the inline reconciler as a real subscriber.
+type AudioBridgeWindow = {
+  _audioStateInline?: { trackId: string | null; isPlaying: boolean; currentTime: number; duration: number; loading: boolean };
+  _syncAllPillsInline?: (s: ReturnType<typeof audioGetAudioState>) => void;
+};
+{
+  const bw = window as unknown as AudioBridgeWindow;
+  if (bw._audioStateInline) {
+    audioSubscribeAudio((s) => {
+      const dest = bw._audioStateInline!;
+      dest.trackId = s.trackId;
+      dest.isPlaying = s.isPlaying;
+      dest.currentTime = s.currentTime;
+      dest.duration = s.duration;
+      dest.loading = s.loading;
+    });
+  }
+  if (typeof bw._syncAllPillsInline === 'function') {
+    audioSubscribeAudio(bw._syncAllPillsInline);
+  }
+}
+
 // Detail overlay lifecycle — historically inline `function openDetail()`,
 // `function closeDetail()`, `function bindDetailClose()` declared at
 // module scope. Re-attached on `window` to keep the legacy inline call

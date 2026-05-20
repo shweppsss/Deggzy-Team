@@ -11380,56 +11380,18 @@ const PAUSE_ICON_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden
    updates. The store-driven approach survives renderCatalogue, openDetail,
    route changes, and realtime sync: any new pill DOM node that lands in
    the document picks up the current state on the next reconcile pass. */
-const _audioState = {
-  trackId:     null, // currently loaded track id, or null
-  isPlaying:   false,
-  currentTime: 0,
-  duration:    0,
-  loading:     false,
-};
-const _audioSubscribers = new Set();
-function getAudioState() { return _audioState; }
-function subscribeAudio(fn) {
-  _audioSubscribers.add(fn);
-  try { fn(_audioState); } catch (e) {}
-  return () => _audioSubscribers.delete(fn);
-}
-function _setAudioState(patch) {
-  let changed = false;
-  for (const k in patch) {
-    if (_audioState[k] !== patch[k]) { _audioState[k] = patch[k]; changed = true; }
-  }
-  if (!changed) return;
-  for (const fn of _audioSubscribers) {
-    try { fn(_audioState); } catch (e) { console.warn('[audio] subscriber failed:', e); }
-  }
-}
-
-// Hooks the single MiniPlayer <audio> element to the store. Idempotent —
-// guarded by the _noNameStoreBound flag so we don't double-bind even if
-// MiniPlayer.init() runs more than once. timeupdate is throttled via rAF
-// because it can fire 60+ times per second.
-function _hookAudioToStore(audio) {
-  if (!audio || audio._noNameStoreBound) return;
-  audio._noNameStoreBound = true;
-  let rafScheduled = false;
-  audio.addEventListener('play',           () => _setAudioState({ isPlaying: true,  loading: false }));
-  audio.addEventListener('pause',          () => _setAudioState({ isPlaying: false }));
-  audio.addEventListener('ended',          () => _setAudioState({ isPlaying: false, currentTime: 0 }));
-  audio.addEventListener('loadedmetadata', () => _setAudioState({ duration: audio.duration || 0 }));
-  audio.addEventListener('durationchange', () => _setAudioState({ duration: audio.duration || 0 }));
-  audio.addEventListener('loadstart',      () => _setAudioState({ loading: true }));
-  audio.addEventListener('canplay',        () => _setAudioState({ loading: false }));
-  audio.addEventListener('error',          () => _setAudioState({ loading: false }));
-  audio.addEventListener('timeupdate', () => {
-    if (rafScheduled) return;
-    rafScheduled = true;
-    requestAnimationFrame(() => {
-      rafScheduled = false;
-      _setAudioState({ currentTime: audio.currentTime });
-    });
-  });
-}
+// Audio state store — EXTRACTED in Phase TS-17 to /src/features/audio/state.ts.
+// `getAudioState`, `subscribeAudio`, `_setAudioState`, `_hookAudioToStore` are
+// now TS exports re-attached on window by main.ts. The MiniPlayer module
+// imports them directly (no window hop).
+//
+// BOOT ORDER NUANCE — this inline <script> parses BEFORE the deferred
+// /src/main.ts module. So we declare a plain `_audioState` object here for
+// local readers (_trackAudioPillHTML, _syncAllPills) and main.ts mirrors
+// store updates back into it via a subscriber. Inline `_audioState.X`
+// reads keep working unchanged; the actual mutations happen in the TS module.
+const _audioState = { trackId: null, isPlaying: false, currentTime: 0, duration: 0, loading: false };
+window._audioStateInline = _audioState; // mirrored by main.ts
 
 // Reconciles every pill in the DOM with the current audio state. Only one
 // pill (the one whose data-track-id matches state.trackId AND state.isPlaying)
@@ -11461,7 +11423,9 @@ function _syncAllPills(state) {
     }
   });
 }
-subscribeAudio(_syncAllPills);
+// `subscribeAudio` lives in the TS module loaded AFTER this inline block.
+// Expose `_syncAllPills` so main.ts can register the subscription itself.
+window._syncAllPillsInline = _syncAllPills;
 
 // Pill HTML — reads from _audioState so a fresh render lands with the right
 // icon + fill. Subsequent state changes flow through the subscriber above.

@@ -12,19 +12,16 @@
 //   - show(track, audioUrl, coverUrl) → show pill, set audio src, play
 //   - hide()                          → pause, clear src, hide pill
 //
-// DEPENDENCIES (read lazily — no import at this layer):
-//   - `_hookAudioToStore(audio)`   bare global, may be undefined
-//   - `_setAudioState({...})`      bare global, may be undefined
-//   - `statusLabel(status)`        bare global, may be undefined
-//   - `openDetail('track', id)`    bare global, may be undefined
-// All are guarded with typeof checks and degrade silently — same contract
-// as the inline IIFE version.
-//
-// `icon()` is the only HARD dependency. It is now a TS export of
-// /src/lib/render-utils.ts and is imported directly here.
+// DEPENDENCIES:
+//   - hookAudioToStore + setAudioState — imported directly from
+//     /src/features/audio (TS-17, single source of truth)
+//   - icon() — TS export from /src/lib/render-utils
+//   - statusLabel(status), openDetail('track', id) — still bare globals,
+//     read lazily via typeof checks (degrade silently if unavailable)
 // ============================================================================
 
 import { icon } from '../lib/render-utils';
+import { hookAudioToStore, setAudioState } from './audio';
 
 interface MiniPlayerTrack {
   id: string;
@@ -51,8 +48,6 @@ export interface MiniPlayerAPI {
 // defined inline in index.html. Each accessor returns `null` if the global
 // isn't yet attached (e.g. during the very early boot window).
 type Win = Window & {
-  _hookAudioToStore?: (audio: HTMLAudioElement) => void;
-  _setAudioState?: (update: AudioStateUpdate) => void;
   statusLabel?: (status?: string) => string;
   openDetail?: (kind: string, id: string) => void;
 };
@@ -60,6 +55,10 @@ type Win = Window & {
 function w(): Win {
   return window as unknown as Win;
 }
+
+// AudioStateUpdate is preserved for the existing call-site shape, but it is
+// now satisfied by the imported `setAudioState` from /src/features/audio.
+void ({} as AudioStateUpdate);
 
 // Module-private state (matches the closure scope of the inline IIFE).
 let el: HTMLElement | null = null;
@@ -89,8 +88,7 @@ function init(): void {
   // Wire the audio element to the global AudioStore. All pill UI
   // (catalogue, detail, mini-player) reflects state from the store rather
   // than each listener reaching into the DOM independently.
-  const hook = w()._hookAudioToStore;
-  if (typeof hook === 'function') hook(audio);
+  hookAudioToStore(audio);
 
   playBtn.innerHTML = icon('play', 18);
   if (closeBtn) closeBtn.innerHTML = icon('close', 14);
@@ -194,8 +192,7 @@ function show(track: MiniPlayerTrack, audioUrl: string, coverUrl?: string): void
   // Notify the store BEFORE swapping src so any pill in the DOM
   // transitions its "active" highlight instantly, and the previous active
   // pill resets to 0% / play-icon without waiting for the new audio events.
-  const setAudioState = w()._setAudioState;
-  if (isNewTrack && typeof setAudioState === 'function') {
+  if (isNewTrack) {
     setAudioState({ trackId: track.id, currentTime: 0, duration: 0, loading: true });
   }
   if (audio.src !== audioUrl) audio.src = audioUrl;
@@ -229,10 +226,7 @@ function hide(): void {
   el.hidden = true;
   currentTrackId = null;
   // Clear the store so every pill in the DOM reverts to inactive/0%.
-  const setAudioState = w()._setAudioState;
-  if (typeof setAudioState === 'function') {
-    setAudioState({ trackId: null, isPlaying: false, currentTime: 0, duration: 0, loading: false });
-  }
+  setAudioState({ trackId: null, isPlaying: false, currentTime: 0, duration: 0, loading: false });
 }
 
 export const MiniPlayer: MiniPlayerAPI = Object.freeze({

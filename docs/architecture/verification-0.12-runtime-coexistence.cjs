@@ -3588,6 +3588,126 @@ for (let i = 0; i < 500; i++) {
 }
 tr('SC87.b 500 resize calls identical', _sc87DurStable);
 
+// ===========================================================================
+// SCENARIO 88 — Audio store: initial state + subscribe-on-attach (TS-17)
+// ===========================================================================
+console.log('\n=== SCENARIO 88 — audio store basics (TS-17) ===');
+const _audioR = _bundle('../features/audio');
+_audioR._resetAudioStore();
+const _sc88Initial = _audioR.getAudioState();
+eq('SC88.a trackId starts null', _sc88Initial.trackId, null);
+eq('SC88.b isPlaying starts false', _sc88Initial.isPlaying, false);
+eq('SC88.c currentTime starts 0', _sc88Initial.currentTime, 0);
+eq('SC88.d duration starts 0', _sc88Initial.duration, 0);
+eq('SC88.e loading starts false', _sc88Initial.loading, false);
+// Subscribe fires synchronously with the current state.
+let _sc88FirstFire = null;
+_audioR.subscribeAudio((s) => { if (_sc88FirstFire === null) _sc88FirstFire = JSON.stringify(s); });
+tr('SC88.f subscribe fires synchronously with current state', _sc88FirstFire === JSON.stringify(_sc88Initial));
+tr('SC88.g subscriber count is 1', _audioR._getSubscriberCount() === 1);
+
+// ===========================================================================
+// SCENARIO 89 — Audio store: dirty-aware notification (TS-17)
+// ===========================================================================
+console.log('\n=== SCENARIO 89 — audio store dirty-aware notifications (TS-17) ===');
+_audioR._resetAudioStore();
+let _sc89FireCount = 0;
+_audioR.subscribeAudio(() => { _sc89FireCount++; });
+// initial sync fire bumps count to 1
+const _sc89AfterSub = _sc89FireCount;
+_audioR.setAudioState({ trackId: 'track-a' }); // change → notify
+_audioR.setAudioState({ trackId: 'track-a' }); // same value → NOP, no notify
+_audioR.setAudioState({ trackId: 'track-b' }); // change → notify
+_audioR.setAudioState({}); // empty patch → no notify
+tr('SC89.a after sub: synchronous fire counted', _sc89AfterSub === 1);
+tr('SC89.b two real changes + two NOPs → 2 extra fires', _sc89FireCount === 3);
+
+// ===========================================================================
+// SCENARIO 90 — Audio store: unsubscribe + isolation (TS-17)
+// ===========================================================================
+console.log('\n=== SCENARIO 90 — audio store unsubscribe + isolation (TS-17) ===');
+_audioR._resetAudioStore();
+let _sc90Fires = 0;
+const _sc90Unsub = _audioR.subscribeAudio(() => { _sc90Fires++; });
+const _sc90AfterSub = _sc90Fires; // 1
+_audioR.setAudioState({ trackId: 't1' }); // 2
+_sc90Unsub();
+_audioR.setAudioState({ trackId: 't2' }); // no more fires
+tr('SC90.a unsubscribe stops further notifications', _sc90Fires === 2);
+tr('SC90.b subscriber count returns to 0', _audioR._getSubscriberCount() === 0);
+// Failing subscriber doesn't break sibling subscribers.
+_audioR._resetAudioStore();
+let _sc90SiblingFires = 0;
+_audioR.subscribeAudio(() => { throw new Error('boom'); });
+_audioR.subscribeAudio(() => { _sc90SiblingFires++; });
+const _sc90Initial = _sc90SiblingFires;
+_audioR.setAudioState({ isPlaying: true });
+tr('SC90.c failing subscriber does not break sibling', _sc90SiblingFires === _sc90Initial + 1);
+
+// ===========================================================================
+// SCENARIO 91 — Audio store: hookAudioToStore idempotence (TS-17)
+// ===========================================================================
+console.log('\n=== SCENARIO 91 — hookAudioToStore idempotence (TS-17) ===');
+_audioR._resetAudioStore();
+function mockAudio() {
+  const listeners = {};
+  return {
+    duration: 0,
+    currentTime: 0,
+    addEventListener(name, fn) { (listeners[name] = listeners[name] || []).push(fn); },
+    _listeners: listeners,
+    _fire(name, ...args) { (listeners[name] || []).forEach((fn) => fn(...args)); },
+  };
+}
+const _sc91Audio = mockAudio();
+_audioR.hookAudioToStore(_sc91Audio);
+tr('SC91.a _noNameStoreBound marker set', _sc91Audio._noNameStoreBound === true);
+tr('SC91.b play listener attached', !!(_sc91Audio._listeners.play && _sc91Audio._listeners.play.length === 1));
+// Second call must NOT double-bind.
+_audioR.hookAudioToStore(_sc91Audio);
+tr('SC91.c second hook is idempotent (still 1 play listener)', _sc91Audio._listeners.play.length === 1);
+// null/undefined are safe.
+let _sc91Threw = false;
+try { _audioR.hookAudioToStore(null); _audioR.hookAudioToStore(undefined); } catch (_e) { _sc91Threw = true; }
+tr('SC91.d hookAudioToStore(null/undef) is a safe no-op', !_sc91Threw);
+
+// ===========================================================================
+// SCENARIO 92 — Audio store: state flows from audio events (TS-17)
+// ===========================================================================
+console.log('\n=== SCENARIO 92 — audio events → store transitions (TS-17) ===');
+_audioR._resetAudioStore();
+const _sc92Audio = mockAudio();
+_audioR.hookAudioToStore(_sc92Audio);
+_sc92Audio._fire('play');
+tr('SC92.a play → isPlaying true', _audioR.getAudioState().isPlaying === true);
+tr('SC92.b play → loading false', _audioR.getAudioState().loading === false);
+_sc92Audio._fire('pause');
+tr('SC92.c pause → isPlaying false', _audioR.getAudioState().isPlaying === false);
+_sc92Audio.duration = 180;
+_sc92Audio._fire('loadedmetadata');
+tr('SC92.d loadedmetadata → duration captured', _audioR.getAudioState().duration === 180);
+_sc92Audio._fire('ended');
+const _sc92End = _audioR.getAudioState();
+tr('SC92.e ended → isPlaying false + currentTime 0', _sc92End.isPlaying === false && _sc92End.currentTime === 0);
+
+// ===========================================================================
+// SCENARIO 93 — Audio store: setAudioState reference-equality dirty check (TS-17)
+// ===========================================================================
+console.log('\n=== SCENARIO 93 — setAudioState reference equality dirty check (TS-17) ===');
+_audioR._resetAudioStore();
+let _sc93Fires = 0;
+_audioR.subscribeAudio(() => { _sc93Fires++; });
+const _sc93AfterSub = _sc93Fires; // 1
+_audioR.setAudioState({ trackId: 't1', isPlaying: false }); // change trackId only → notify
+_audioR.setAudioState({ trackId: 't1', isPlaying: false }); // both unchanged → NOP
+_audioR.setAudioState({ trackId: 't1', isPlaying: true });  // isPlaying changed → notify
+tr('SC93.a 3 setAudioState calls → 2 extra fires', _sc93Fires - _sc93AfterSub === 2);
+// Undefined fields are skipped (not treated as "set to undefined").
+_audioR._resetAudioStore();
+_audioR.setAudioState({ trackId: 'x', duration: 100 });
+_audioR.setAudioState({ duration: undefined });
+tr('SC93.b undefined-valued field is skipped', _audioR.getAudioState().duration === 100);
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------
