@@ -15,22 +15,35 @@
 // The activate event prunes old cache buckets.
 // ============================================================================
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const SHELL_CACHE = `deggzy-shell-${CACHE_VERSION}`;
 
 // Paths relative to the SW scope (GitHub Pages serves under /Deggzy-Team/).
+// NOTE: Vite-hashed asset URLs (assets/main-*.js, assets/manifest-*.json)
+// change every build, so we DON'T list them here — the runtime fetch
+// handler caches them cache-first on first load. The shell list is
+// only paths we KNOW are stable.
 const SHELL_URLS = [
   './',
   './index.html',
-  './manifest.webmanifest',
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(SHELL_CACHE)
-      .then((cache) => cache.addAll(SHELL_URLS.map((u) => new Request(u, { cache: 'reload' }))))
-      .catch((err) => console.warn('[sw] shell pre-cache failed:', err))
-      .then(() => self.skipWaiting()),
+    (async () => {
+      const cache = await caches.open(SHELL_CACHE);
+      // Per-URL add with isolated catch: a single 404 must NOT abort the
+      // whole pre-cache (v1's atomic addAll bug). Failed entries are
+      // logged but the rest of the shell still lands in the cache.
+      await Promise.all(
+        SHELL_URLS.map((u) =>
+          cache.add(new Request(u, { cache: 'reload' })).catch((err) => {
+            console.warn('[sw] failed to pre-cache', u, '—', err);
+          }),
+        ),
+      );
+      await self.skipWaiting();
+    })(),
   );
 });
 
