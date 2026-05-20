@@ -8276,60 +8276,10 @@ function initSupabase() {
   }
 }
 
-async function loadProfileFromCloud() {
-  if (!sb || !_currentUser) return null;
-  try {
-    const { data, error } = await sb.from('profiles').select('*').eq('id', _currentUser.id).maybeSingle();
-    if (error && error.code !== 'PGRST116') throw error;
-    _currentProfile = data;
-    return data;
-  } catch (e) {
-    console.warn('loadProfileFromCloud:', e);
-    return null;
-  }
-}
-
-async function ensureProfileExists(name, role) {
-  if (!sb || !_currentUser) return;
-  try {
-    const upsert = await sb.from('profiles').upsert({
-      id: _currentUser.id,
-      email: _currentUser.email,
-      name, role,
-    }, { onConflict: 'id' });
-    if (upsert.error) console.warn('upsert profile:', upsert.error);
-    _currentProfile = (await sb.from('profiles').select('*').eq('id', _currentUser.id).maybeSingle()).data;
-  } catch (e) { console.warn('ensureProfileExists:', e); }
-}
-
-async function saveAliasToCloud(alias) {
-  if (!sb || !_currentUser) return false;
-  const value = (alias || '').trim();
-  try {
-    const { error } = await sb.from('profiles').update({ alias: value || null }).eq('id', _currentUser.id);
-    if (error) throw error;
-    if (_currentProfile) _currentProfile.alias = value || null;
-    return true;
-  } catch (e) {
-    console.warn('saveAliasToCloud:', e);
-    return false;
-  }
-}
-
-async function loadWorkspaceFromCloud() {
-  if (!sb) return false;
-  try {
-    const { data, error } = await sb.from('workspace').select('*').eq('id', WORKSPACE_ID).maybeSingle();
-    if (error) throw error;
-    if (data && data.state) {
-      state = deepMerge(JSON.parse(JSON.stringify(DEFAULTS)), data.state);
-      if (data.updated_at) _lastRemoteUpdatedAt = data.updated_at;
-      try { localStorage.setItem(workspaceKey(), JSON.stringify(state)); } catch (e) {}
-      return true;
-    }
-  } catch (e) { console.warn('loadWorkspaceFromCloud:', e); }
-  return false;
-}
+// loadProfileFromCloud + ensureProfileExists + saveAliasToCloud +
+// loadWorkspaceFromCloud — EXTRACTED in Phase TS-12 to /src/data/.
+// (workspace.ts, profiles.ts). The inline names are restored on
+// window by /src/main.ts so legacy call sites work unchanged.
 
 let _cloudSyncPending = false;
 let _cloudRetryTimer = null;
@@ -10449,110 +10399,43 @@ const DEFAULTS = {
 
 };
 
-let state = loadState();
+// `state` — EXTRACTED in Phase TS-12 to /src/data/workspace.ts. The
+// in-memory workspace state lives there now; /src/main.ts mirrors it
+// via `Object.defineProperty(window, 'state', { get, set })` so legacy
+// inline `state.events.find(...)` etc. read through to the TS data
+// layer's snapshot. Removed the inline `let state = loadState()` — the
+// data layer hydrates the state itself.
+// (loadState equivalent is hydrateStateFromLocal in /src/data/workspace.ts.)
 
-function deepMerge(target, source) {
-  if (!source || typeof source !== 'object') return target;
-  for (const k in source) {
-    const sv = source[k];
-    if (sv && typeof sv === 'object' && !Array.isArray(sv)) {
-      target[k] = deepMerge((target[k] && typeof target[k] === 'object' && !Array.isArray(target[k])) ? target[k] : {}, sv);
-    } else if (sv !== undefined) {
-      // Arrays and primitives: take saved value as-is (the user's edits)
-      target[k] = sv;
-    }
-  }
-  return target;
-}
+// deepMerge / mergeWorkspaceStates / loadState / save —
+// EXTRACTED in Phase TS-12 to:
+//   - /src/data/merge.ts         (deepMergeWorkspace, mergeWorkspaceStates, patchWorkspace)
+//   - /src/data/persistence.ts   (loadStateFromLocal, persistStateToLocal)
+//   - /src/data/workspace.ts     (saveWorkspace with debounce + cloud hook)
+// Re-attached on window via /src/main.ts. The legacy call sites
+// (`save()`, `deepMerge(...)` etc.) keep working unchanged.
 
-// Reconcile two workspace states item-by-item on the known id-bearing arrays.
-// Called when a concurrent cloud edit is detected before we push: we keep BOTH sides' items
-// rather than overwriting. Local wins on per-id conflicts. Deletes can resurrect if the other
-// side still has the item — known limitation of the monolith JSONB approach.
-function mergeWorkspaceStates(local, cloud) {
-  if (!cloud || typeof cloud !== 'object') return local;
-  if (!local || typeof local !== 'object') return cloud;
-  // Every top-level array in state whose items carry a stable `.id` must be listed
-  // here, otherwise concurrent edits across users will overwrite each other instead
-  // of merging. clips + capsules were added in PR #6 and slipped through.
-  const ID_ARRAYS = ['events', 'todos', 'inspirations', 'team', 'tracks', 'clips', 'capsules'];
-  const merged = JSON.parse(JSON.stringify(local));
-  for (const key of ID_ARRAYS) {
-    const localArr = Array.isArray(local[key]) ? local[key] : [];
-    const cloudArr = Array.isArray(cloud[key]) ? cloud[key] : [];
-    const byId = new Map();
-    cloudArr.forEach(it => { if (it && it.id) byId.set(it.id, it); });
-    localArr.forEach(it => { if (it && it.id) byId.set(it.id, it); }); // local wins on conflict
-    merged[key] = Array.from(byId.values());
-  }
-  return merged;
-}
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(workspaceKey());
-    const base = JSON.parse(JSON.stringify(DEFAULTS));
-    if (!raw) return base;
-    const parsed = JSON.parse(raw);
-    return deepMerge(base, parsed);
-  } catch (e) {
-    console.warn('loadState fallback to defaults:', e);
-    return JSON.parse(JSON.stringify(DEFAULTS));
-  }
-}
-
-let _saveTimer = null;
-let _saveErrorLogged = false;
-function save() {
-  // Debounced save — prevents losing edits if many happen in succession
-  if (_saveTimer) clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(() => {
-    try {
-      const payload = JSON.stringify(state);
-      localStorage.setItem(workspaceKey(), payload);
-    } catch (e) {
-      // Log full details once to identify the real cause
-      if (!_saveErrorLogged) {
-        _saveErrorLogged = true;
-        try {
-          const sz = JSON.stringify(state).length;
-          let lsTotal = 0;
-          for (let i = 0; i < localStorage.length; i++) {
-            lsTotal += (localStorage.getItem(localStorage.key(i)) || '').length;
-          }
-          console.error('[save] localStorage.setItem failed:', {
-            name: e && e.name,
-            message: e && e.message,
-            state_size_bytes: sz,
-            localStorage_total_bytes: lsTotal,
-            workspaceKey: workspaceKey(),
-          }, e);
-        } catch (logErr) { console.error('[save] failed:', e); }
-        setTimeout(() => { _saveErrorLogged = false; }, 60000);
-      }
-      const errName = (e && e.name) || 'Error';
-      const errMsg = (e && e.message) || '';
-      toast('⚠ Sauvegarde locale impossible (' + errName + '). Voir console.');
-    }
-  }, 80);
-  // Push to cloud (debounced 800ms)
-  scheduleCloudSave();
-}
-
-// Force flush before unload (capture any pending edits)
+// Force flush before unload (capture any pending edits).
+// TS-12 — local persistence is owned by /src/data/workspace.ts; we
+// call its `save({ immediate: true })` equivalent via window.save() to
+// trigger the synchronous write. (window.save is debounced; for the
+// unload/visibility paths we want the flush NOW.)
 window.addEventListener('beforeunload', () => {
-  if (_saveTimer) {
-    clearTimeout(_saveTimer);
-    try { localStorage.setItem(workspaceKey(), JSON.stringify(state)); } catch (e) {}
-  }
+  try {
+    // The TS data layer exposes a synchronous flush via window.saveImmediate.
+    const wsi = window.saveImmediate;
+    if (typeof wsi === 'function') wsi();
+    else if (typeof window.save === 'function') window.save();
+  } catch (e) { /* never let beforeunload throw */ }
 });
 
-// Auto-save when user blurs the window (mobile app switch)
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && _saveTimer) {
-    clearTimeout(_saveTimer);
-    try { localStorage.setItem(workspaceKey(), JSON.stringify(state)); } catch (e) {}
-  }
+  if (!document.hidden) return;
+  try {
+    const wsi = window.saveImmediate;
+    if (typeof wsi === 'function') wsi();
+    else if (typeof window.save === 'function') window.save();
+  } catch (e) { /* never throw */ }
 });
 
 function toast(msg) {
@@ -15526,11 +15409,11 @@ async function checkAuth() {
 function logoutStudio() {
   hideAccountMenu();
   if (!confirm('Se déconnecter ? Le PIN sera réinitialisé sur cet appareil.')) return;
-  // Flush save before logout
-  if (_saveTimer) {
-    clearTimeout(_saveTimer);
-    try { localStorage.setItem(workspaceKey(), JSON.stringify(state)); } catch (e) {}
-  }
+  // Flush save before logout — TS-12 owns the persistence; ask for an
+  // immediate (non-debounced) flush.
+  try {
+    if (typeof window.saveImmediate === 'function') window.saveImmediate();
+  } catch (e) { /* never let logout throw on save */ }
   if (_currentUser) {
     localStorage.removeItem(LOCAL_PIN_KEY_PREFIX + _currentUser.id);
   }
@@ -16072,108 +15955,13 @@ function updateMemberField(id, field, v) {
 /* ============================
    ROUTING / INIT
    ============================ */
-function renderView(view) {
-  if (view === 'dashboard') renderDashboard();
-  if (view === 'profile') { renderProfile(); setupProfileAliasEdit(); }
-  if (view === 'todos') renderTodos();
-  if (view === 'catalogue') renderCatalogue();
-  if (view === 'calendrier') renderCalendar();
-  if (view === 'inspirations') renderInspirations();
-  if (view === 'clips') renderClips();
-  if (view === 'capsules') renderCapsules();
-  if (view === 'assets') renderAssets();
-  if (view === 'equipe') renderTeam();
-  if (view === 'budget') renderBudget();
-  if (view === 'plan') renderPlan();
-  if (view === 'kpi') renderKPI();
-}
-
-// Section map: scope name → render function. Used by both renderAll() (full
-// pass) and requestRender({ only: [...] }) (granular re-render).
-// Each render is isolated: a failure in one section never aborts the boot
-// (which would leave the auth screen stuck with no visible form).
-const RENDER_SECTIONS = {
-  dashboard:    renderDashboard,
-  profile:      renderProfile,
-  todos:        renderTodos,
-  catalogue:    renderCatalogue,
-  calendar:     renderCalendar,
-  inspirations: renderInspirations,
-  clips:        renderClips,
-  capsules:     renderCapsules,
-  assets:       renderAssets,
-  team:         renderTeam,
-  budget:       renderBudget,
-  plan:         renderPlan,
-  kpi:          renderKPI,
-};
-
-// state field → sections that depend on it. Used by realtime to skip work
-// when an inbound payload only touches a field that no visible section cares
-// about (e.g. unrelated cache fields).
-const STATE_DEPS = {
-  events:       ['dashboard', 'calendar'],
-  todos:        ['dashboard', 'todos'],
-  tracks:       ['dashboard', 'catalogue'],
-  inspirations: ['inspirations'],
-  clips:        ['clips'],
-  capsules:     ['capsules'],
-  assets:       ['assets'],
-  team:         ['team', 'dashboard'],
-  budget:       ['budget'],
-  plan:         ['plan'],
-  kpi:          ['kpi'],
-  user:         ['profile'],
-  streak:       ['dashboard'],
-  tagFilter:    ['calendar', 'todos', 'dashboard'],
-};
-
-function renderAll(opts) {
-  const only = (opts && Array.isArray(opts.only)) ? new Set(opts.only) : null;
-  for (const name in RENDER_SECTIONS) {
-    if (only && !only.has(name)) continue;
-    try {
-      RENDER_SECTIONS[name]();
-    } catch (e) {
-      console.error('[Render] ' + name + ' failed:', e);
-      // Surface render failures to Sentry when configured so we know what
-      // broke in production. captureSentryException is a no-op when Sentry
-      // isn't loaded, so this stays free in the default install.
-      if (typeof captureSentryException === 'function') {
-        captureSentryException(e, { renderSection: name });
-      }
-    }
-  }
-}
-
-// rAF-coalesced renderer. Multiple calls in the same tick collapse into one
-// pass. A pending narrow render is promoted to full if anything later asks
-// for a full pass. Used by the realtime handler so a burst of 5+ payloads
-// (e.g. someone batch-saving) renders once, not five times.
-let _renderQueueScopes = null;
-let _renderQueueFrame = null;
-let _renderQueueFull = false;
-function requestRender(opts) {
-  const scopes = (opts && Array.isArray(opts.only)) ? opts.only : null;
-  if (scopes === null) {
-    _renderQueueFull = true;
-    _renderQueueScopes = null;
-  } else if (!_renderQueueFull) {
-    if (_renderQueueScopes === null) _renderQueueScopes = scopes.slice();
-    else for (const s of scopes) {
-      if (!_renderQueueScopes.includes(s)) _renderQueueScopes.push(s);
-    }
-  }
-  if (_renderQueueFrame !== null) return;
-  _renderQueueFrame = requestAnimationFrame(() => {
-    const wasFull = _renderQueueFull;
-    const scopes = _renderQueueScopes;
-    _renderQueueFull = false;
-    _renderQueueScopes = null;
-    _renderQueueFrame = null;
-    renderAll(wasFull || !scopes ? undefined : { only: scopes });
-  });
-}
+// renderView / renderAll / requestRender / RENDER_SECTIONS / STATE_DEPS —
+// EXTRACTED in Phase TS-12 to /src/render/dispatch.ts. The actual
+// renderDashboard / renderTodos / renderCalendar / etc. bodies stay
+// inline below; main.ts registers each one against the TS dispatch
+// registry. Legacy call sites (`renderView('dashboard')`,
+// `renderAll()`, `requestRender({ only: [...] })`) keep working via
+// window mirrors.
 
 // Compares two state snapshots and returns the list of render scopes whose
 // data changed. Falls back to a full render when comparison itself fails.

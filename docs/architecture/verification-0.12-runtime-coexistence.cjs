@@ -2283,6 +2283,214 @@ _authExports.setCurrentUser(null);
 _authExports.setCurrentProfile(null);
 _authExports.setSupabaseClient(null);
 
+// ===========================================================================
+// TS-12 — DATA LAYER + RENDER DISPATCH SCENARIOS (SC45..SC48)
+// ===========================================================================
+// Bundle the data + render modules via esbuild so the harness exercises
+// the SAME implementations the production bundle uses.
+
+const dataBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'data', 'index.ts')],
+  bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+  write: false, logLevel: 'silent',
+});
+const _dataMod = { exports: {} };
+(function (module, exports, require) { eval(dataBundle.outputFiles[0].text); })(_dataMod, _dataMod.exports, require);
+const _data = _dataMod.exports;
+
+const renderBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', 'index.ts')],
+  bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+  write: false, logLevel: 'silent',
+});
+const _renderMod = { exports: {} };
+(function (module, exports, require) { eval(renderBundle.outputFiles[0].text); })(_renderMod, _renderMod.exports, require);
+const _render = _renderMod.exports;
+
+// ===========================================================================
+// SCENARIO 45 — Merge preservation (TS-12)
+// ===========================================================================
+// A partial patch must NOT destroy collections it doesn't touch.
+//   - patch on `events` leaves `todos` intact
+//   - patch on a scalar leaves all arrays intact
+//   - id-array merge keeps both sides' items (by id, last-write wins on collision)
+//   - undefined in patch is IGNORED (target unchanged)
+//   - null in patch IS RESPECTED (target becomes null)
+// ===========================================================================
+console.log('\n=== SCENARIO 45 — merge preservation (TS-12) ===');
+
+const initialState = {
+  events: [{ id: 'e1', title: 'Event 1' }, { id: 'e2', title: 'Event 2' }],
+  todos:  [{ id: 't1', text: 'Todo 1' }],
+  tracks: [{ id: 'tr1', name: 'Track 1' }],
+  user:   { name: 'Alice', role: 'Artiste' },
+};
+
+// Patch only `events` — todos and tracks must be untouched.
+const patched1 = _data.patchWorkspace(initialState, {
+  events: [{ id: 'e3', title: 'Event 3' }],
+});
+eq('SC45.a events merged by id (existing + new)', patched1.events.map(e => e.id).sort(), ['e1', 'e2', 'e3']);
+eq('SC45.b todos preserved unchanged', patched1.todos, [{ id: 't1', text: 'Todo 1' }]);
+eq('SC45.c tracks preserved unchanged', patched1.tracks, [{ id: 'tr1', name: 'Track 1' }]);
+eq('SC45.d user preserved unchanged', patched1.user, { name: 'Alice', role: 'Artiste' });
+
+// id-array conflict: same id in both → patch value wins (last write).
+const patched2 = _data.patchWorkspace(initialState, {
+  events: [{ id: 'e1', title: 'Event 1 — UPDATED' }],
+});
+const e1After = patched2.events.find(e => e.id === 'e1');
+tr('SC45.e id collision: patch value wins', e1After.title === 'Event 1 — UPDATED');
+eq('SC45.f id collision: other items preserved', patched2.events.map(e => e.id).sort(), ['e1', 'e2']);
+
+// undefined skipped (RULE 5)
+const patched3 = _data.patchWorkspace(initialState, { user: undefined });
+eq('SC45.g undefined in patch is ignored', patched3.user, initialState.user);
+
+// null respected (RULE 6)
+const patched4 = _data.patchWorkspace(initialState, { user: null });
+eq('SC45.h null in patch IS respected (delete intention)', patched4.user, null);
+
+// Nested object merge
+const stateNested = { user: { name: 'Alice', role: 'Artiste', extra: 'keep me' } };
+const patched5 = _data.patchWorkspace(stateNested, { user: { role: 'Manager' } });
+eq('SC45.i nested object merge preserves siblings', patched5.user, { name: 'Alice', role: 'Manager', extra: 'keep me' });
+
+// Original state NOT mutated (immutable update)
+eq('SC45.j original state not mutated', initialState.events.length, 2);
+eq('SC45.k patched is a new object', patched1 === initialState, false);
+
+// ===========================================================================
+// SCENARIO 46 — Render dispatch stability (TS-12)
+// ===========================================================================
+// 100 invalidateSection() calls must collapse to ONE renderAll pass under
+// the rAF batching layer.
+// ===========================================================================
+console.log('\n=== SCENARIO 46 — render dispatch stability (TS-12) ===');
+
+_render._resetSectionRegistry();
+_render._resetRenderPassCount();
+
+let _sc46DashboardCalls = 0;
+let _sc46TodosCalls = 0;
+let _sc46CalendarCalls = 0;
+_render.registerSectionRenderer('dashboard', () => { _sc46DashboardCalls += 1; });
+_render.registerSectionRenderer('todos',     () => { _sc46TodosCalls += 1; });
+_render.registerSectionRenderer('calendar',  () => { _sc46CalendarCalls += 1; });
+
+// 100 invalidate calls — same section
+for (let i = 0; i < 100; i++) _render.invalidateSection('dashboard');
+eq('SC46.a no render fired yet (queued)', _render._getRenderPassCount(), 0);
+_render._flushRenderQueue();
+eq('SC46.b 100 invalidate → 1 render pass', _render._getRenderPassCount(), 1);
+eq('SC46.c dashboard renderer fired exactly once', _sc46DashboardCalls, 1);
+
+// 100 invalidate calls — mixed sections
+_render._resetRenderPassCount();
+_sc46DashboardCalls = 0;
+_sc46TodosCalls = 0;
+_sc46CalendarCalls = 0;
+for (let i = 0; i < 100; i++) {
+  _render.invalidateSection(i % 3 === 0 ? 'dashboard' : i % 3 === 1 ? 'todos' : 'calendar');
+}
+_render._flushRenderQueue();
+eq('SC46.d mixed invalidate → 1 render pass', _render._getRenderPassCount(), 1);
+eq('SC46.e each section rendered exactly once', { d: _sc46DashboardCalls, t: _sc46TodosCalls, c: _sc46CalendarCalls }, { d: 1, t: 1, c: 1 });
+
+// Full-pass promotion: invalidate + scheduleRender (no args) → full
+_render._resetRenderPassCount();
+_sc46DashboardCalls = 0;
+_sc46TodosCalls = 0;
+_sc46CalendarCalls = 0;
+_render.invalidateSection('dashboard');
+_render.scheduleRender(); // full
+_render._flushRenderQueue();
+eq('SC46.f full-pass promotion: all sections rendered', { d: _sc46DashboardCalls, t: _sc46TodosCalls, c: _sc46CalendarCalls }, { d: 1, t: 1, c: 1 });
+
+// ===========================================================================
+// SCENARIO 47 — Workspace rollback (TS-12)
+// ===========================================================================
+// Save fails → in-memory state stays consistent (no half-mutation, no
+// silent corruption). The state mutation happens BEFORE save() in the
+// production flow; save itself is read-only against state.
+// ===========================================================================
+console.log('\n=== SCENARIO 47 — workspace rollback (TS-12) ===');
+
+// Setup: clean state, register a controllable cloud-push hook.
+_data.setWorkspaceDefaults({ events: [] });
+_data.setState({ events: [{ id: 'e1', title: 'Original' }] });
+let _sc47CloudCalls = 0;
+_data.registerCloudPushHook(() => { _sc47CloudCalls += 1; });
+
+// Capture saves through the test hook.
+let _sc47SuccessCalls = 0;
+_data._setOnSaveSuccess(() => { _sc47SuccessCalls += 1; });
+
+// Healthy save: works as expected.
+_data.saveWorkspace({ immediate: true });
+eq('SC47.a healthy save: cloud hook fired', _sc47CloudCalls, 1);
+eq('SC47.b healthy save: success hook fired', _sc47SuccessCalls, 1);
+eq('SC47.c state intact', _data.getState().events.length, 1);
+
+// Now make localStorage throw on setItem
+resetStorageMock('setItem-throws');
+_data.saveWorkspace({ immediate: true });
+// Cloud hook fires synchronously REGARDLESS (matches inline behavior —
+// cloud-sync indicator should still reflect the attempt). Success hook
+// must NOT fire because persistStateToLocal returned false.
+eq('SC47.d failed save: cloud hook still fired (matches inline)', _sc47CloudCalls, 2);
+eq('SC47.e failed save: success hook NOT fired', _sc47SuccessCalls, 1);
+// State must NOT be corrupted — saveWorkspace never mutates state.
+eq('SC47.f state unchanged after failed save', _data.getState().events, [{ id: 'e1', title: 'Original' }]);
+
+// Restore healthy storage; state is still good; next save works.
+resetStorageMock('ok');
+_data.saveWorkspace({ immediate: true });
+eq('SC47.g recovery: save works after storage healed', _sc47SuccessCalls, 2);
+
+// Cleanup
+_data.registerCloudPushHook(null);
+_data._setOnSaveSuccess(null);
+
+// ===========================================================================
+// SCENARIO 48 — Concurrent patch ordering (TS-12)
+// ===========================================================================
+// Two patchState calls in flight at once. Contract:
+//   - Last write wins (the later-queued patch shows in final state)
+//   - No half-merged intermediate visible: each patch sees a consistent
+//     pre-patch snapshot
+//   - The id-array merge rules are applied per-patch (not per-batch)
+// ===========================================================================
+console.log('\n=== SCENARIO 48 — concurrent patch ordering (TS-12) ===');
+
+_data.setState({ events: [{ id: 'e0', title: 'Initial' }], counter: 0 });
+
+// Fire two patches synchronously — they queue through a Promise chain.
+const _sc48p1 = _data.patchState({ events: [{ id: 'e1', title: 'Patch 1' }], counter: 1 });
+const _sc48p2 = _data.patchState({ events: [{ id: 'e2', title: 'Patch 2' }], counter: 2 });
+
+const [_sc48r1, _sc48r2] = await Promise.all([_sc48p1, _sc48p2]);
+// Each patch returns the state SNAPSHOT it produced; the patches are
+// serialized so r1 reflects the state after patch 1, r2 after patch 2.
+eq('SC48.a patch 1 saw the initial state + added e1', _sc48r1.events.map(e => e.id).sort(), ['e0', 'e1']);
+eq('SC48.b patch 2 saw state-after-patch-1 + added e2', _sc48r2.events.map(e => e.id).sort(), ['e0', 'e1', 'e2']);
+eq('SC48.c counter reflects last-write-wins', _sc48r2.counter, 2);
+
+const finalState = _data.getState();
+eq('SC48.d final state matches last patch return value', finalState.counter, 2);
+eq('SC48.e all 3 events present (no corruption)', finalState.events.map(e => e.id).sort(), ['e0', 'e1', 'e2']);
+
+// Stress: 10 concurrent patches
+_data.setState({ counter: 0, events: [] });
+const _sc48Promises = [];
+for (let i = 1; i <= 10; i++) {
+  _sc48Promises.push(_data.patchState({ counter: i, events: [{ id: 'e' + i, title: 'E' + i }] }));
+}
+const _sc48Results = await Promise.all(_sc48Promises);
+const _sc48Last = _sc48Results[_sc48Results.length - 1];
+eq('SC48.f 10 concurrent patches: last counter wins', _sc48Last.counter, 10);
+eq('SC48.g 10 concurrent patches: all events accumulated', _sc48Last.events.length, 10);
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------

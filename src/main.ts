@@ -83,6 +83,44 @@ import {
 } from './features/modals';
 // TS-10 — auth foundation: local runtime (PIN + session + storage).
 // Network (Supabase / signup / OAuth) stays inline for now.
+// TS-12 — data layer + render dispatch.
+import {
+  // data
+  setSupabaseDataClient,
+  setSupabaseProfilesClient,
+  setWorkspaceDefaults,
+  getState as getWorkspaceState,
+  setState as setWorkspaceState,
+  hydrateStateFromLocal,
+  patchState,
+  loadWorkspace,
+  saveWorkspace,
+  registerCloudPushHook,
+  loadProfile,
+  ensureProfileExists,
+  saveAlias,
+  deepMergeWorkspace,
+  mergeWorkspaceStates,
+  loadStateFromLocal,
+  type WorkspaceState,
+} from './data';
+import {
+  // render
+  registerSectionRenderer,
+  registerPostRouteHook,
+  registerRenderFailureHook,
+  renderRoute,
+  renderAll,
+  invalidateSection,
+  scheduleRender,
+  getDirtySectionsForStateKeys,
+  DASHBOARD_SECTION,
+  TODOS_SECTION,
+  CALENDAR_SECTION,
+  INSPIRATIONS_SECTION,
+  TEAM_SECTION,
+  type SectionId,
+} from './render';
 import {
   // session
   getCurrentUser,
@@ -214,6 +252,25 @@ declare global {
     getSessionTS: typeof getSession;
     // Inline Supabase client — created by the inline initSupabase() call.
     sb: unknown;
+    // TS-12 — data + render dispatch surface
+    loadWorkspaceFromCloud: () => Promise<boolean>;
+    pushWorkspaceToCloudTS?: () => void;
+    loadProfileFromCloud: () => Promise<unknown>;
+    ensureProfileExists: (name: string, role: string) => Promise<unknown>;
+    saveAliasToCloud: (alias: string) => Promise<boolean>;
+    renderView: typeof renderRoute;
+    renderAll: typeof renderAll;
+    requestRender: (opts?: { only?: SectionId[] }) => void;
+    invalidateSection: typeof invalidateSection;
+    state: WorkspaceState;
+    save: () => void;
+    // DEFAULTS lives inline (large), but main.ts forwards a reference to data/.
+    DEFAULTS?: unknown;
+    // TS-12 — legacy merge helpers exposed for inline callers.
+    deepMerge: typeof deepMergeWorkspace;
+    mergeWorkspaceStates: typeof mergeWorkspaceStates;
+    loadState: () => WorkspaceState;
+    saveImmediate?: () => void;
   }
 }
 
@@ -502,3 +559,175 @@ window.getSessionTS = getSession;
 // Silence unused-import warnings for accessors we still import but call lazily.
 void signUpWithPassword;
 void supabaseSignOut;
+
+// ===========================================================================
+// TS-12 — DATA LAYER + RENDER DISPATCH
+// ===========================================================================
+
+// ---- DATA: forward the inline DEFAULTS object reference + state binding ---
+// The inline code declares `let state = loadState()` and `const DEFAULTS = {...}`
+// at module scope. We mirror BOTH through window getter/setter properties
+// so the TS data layer and the legacy inline code share the SAME object.
+//
+// Order of operations at boot:
+//   1. Inline declares DEFAULTS + initial state (before this module runs).
+//   2. This module reads `window.DEFAULTS` + `window.state` lazily on first
+//      use, hands them to the data layer via setWorkspaceDefaults / setState.
+//   3. From then on, every `state` read in inline goes through window.state,
+//      which is now a getter that returns the TS data layer's snapshot.
+//
+// Because the inline code STILL declares `let state` at line ~10452, the
+// window mirror cannot be installed before that line runs (the inline
+// `let` shadows our getter). We resolve this by having the inline `let
+// state = ...` line replaced by a window.defineProperty mirror further
+// down in the index.html edits.
+//
+// For now we expose the wiring functions; the actual state mirror is set
+// up when window.DEFAULTS becomes available.
+
+queueMicrotask(() => {
+  const w = window as unknown as { DEFAULTS?: WorkspaceState; state?: WorkspaceState; sb?: unknown };
+  if (w.DEFAULTS) {
+    setWorkspaceDefaults(w.DEFAULTS);
+  }
+  if (w.state) {
+    setWorkspaceState(w.state);
+  } else {
+    // Cold load — hydrate from local storage using DEFAULTS as the base.
+    if (w.DEFAULTS) setWorkspaceState(hydrateStateFromLocal());
+  }
+  // Mirror the data client to the auth client (same Supabase instance).
+  if (w.sb) {
+    setSupabaseDataClient(w.sb as Parameters<typeof setSupabaseDataClient>[0]);
+    setSupabaseProfilesClient(w.sb as Parameters<typeof setSupabaseProfilesClient>[0]);
+  }
+});
+
+// Cloud push hook — wired so the debounced `save()` in workspace.ts can
+// trigger the inline `pushWorkspaceToCloud` without importing it. The
+// inline cloud-push logic (retry, conflict-reconcile, session refresh)
+// stays inline for TS-13+.
+registerCloudPushHook(() => {
+  const w = window as unknown as { pushWorkspaceToCloud?: () => void };
+  if (typeof w.pushWorkspaceToCloud === 'function') {
+    try { w.pushWorkspaceToCloud(); } catch (_e) { /* swallow — never let cloud push throw */ }
+  }
+});
+
+// Window mirrors — legacy inline still uses these names.
+window.loadWorkspaceFromCloud = loadWorkspace;
+window.deepMerge = deepMergeWorkspace as typeof window.deepMerge;
+window.mergeWorkspaceStates = mergeWorkspaceStates;
+window.loadState = () => {
+  const w = window as unknown as { DEFAULTS?: WorkspaceState };
+  return loadStateFromLocal(w.DEFAULTS || {} as WorkspaceState);
+};
+// Profile data flows through the data layer now; auth lifecycle hook
+// (registerAuthLifecycleHooks.loadProfile) is rewired to read it too.
+window.loadProfileFromCloud = async () => {
+  const u = getCurrentUser();
+  if (!u) return null;
+  const row = await loadProfile(u.id);
+  if (row) setCurrentProfile(row);
+  return row;
+};
+window.ensureProfileExists = async (name: string, role: string) => {
+  const u = getCurrentUser();
+  if (!u) return null;
+  const row = await ensureProfileExists(u.id, u.email, name, role);
+  if (row) setCurrentProfile(row);
+  return row;
+};
+window.saveAliasToCloud = async (alias: string) => {
+  const u = getCurrentUser();
+  if (!u) return false;
+  const ok = await saveAlias(u.id, alias);
+  if (ok) {
+    const cp = getCurrentProfile();
+    if (cp) setCurrentProfile({ ...cp, alias: (alias || '').trim() || null });
+  }
+  return ok;
+};
+
+// Re-route the auth lifecycle hook (was reading window.loadProfileFromCloud
+// LAZILY which was the inline impl). Now the inline impl IS our TS data
+// layer wrapper — so the previous registration already works, no change.
+
+// ---- RENDER DISPATCH -----------------------------------------------------
+// Register each section's renderer against the inline impl. Inline still
+// owns the DOM-rendering bodies; main.ts is the binding layer.
+function callInlineRender(name: string): () => void {
+  return () => {
+    const w = window as unknown as Record<string, unknown>;
+    const fn = w[name];
+    if (typeof fn === 'function') (fn as () => void)();
+  };
+}
+
+registerSectionRenderer(DASHBOARD_SECTION,     callInlineRender('renderDashboard'));
+registerSectionRenderer('profile',             callInlineRender('renderProfile'));
+registerSectionRenderer(TODOS_SECTION,         callInlineRender('renderTodos'));
+registerSectionRenderer('catalogue',           callInlineRender('renderCatalogue'));
+registerSectionRenderer(CALENDAR_SECTION,      callInlineRender('renderCalendar'));
+registerSectionRenderer(INSPIRATIONS_SECTION,  callInlineRender('renderInspirations'));
+registerSectionRenderer('clips',               callInlineRender('renderClips'));
+registerSectionRenderer('capsules',            callInlineRender('renderCapsules'));
+registerSectionRenderer('assets',              callInlineRender('renderAssets'));
+registerSectionRenderer(TEAM_SECTION,          callInlineRender('renderTeam'));
+registerSectionRenderer('budget',              callInlineRender('renderBudget'));
+registerSectionRenderer('plan',                callInlineRender('renderPlan'));
+registerSectionRenderer('kpi',                 callInlineRender('renderKPI'));
+
+// Profile's special-case post-render hook (`setupProfileAliasEdit`).
+registerPostRouteHook('profile', () => {
+  const w = window as unknown as { setupProfileAliasEdit?: () => void };
+  if (typeof w.setupProfileAliasEdit === 'function') w.setupProfileAliasEdit();
+});
+
+// Sentry hook for render-failure capture (kept inline for now).
+registerRenderFailureHook((section, error) => {
+  const w = window as unknown as { captureSentryException?: (e: unknown, ctx: Record<string, unknown>) => void };
+  if (typeof w.captureSentryException === 'function') {
+    w.captureSentryException(error, { renderSection: section });
+  }
+});
+
+// Replace the inline `renderView` / `renderAll` / `requestRender` with
+// the TS dispatch layer. Legacy callers (`renderView('dashboard')`,
+// `renderAll()`, `requestRender({ only: [...] })`) keep working.
+window.renderView = renderRoute;
+window.renderAll = renderAll;
+window.requestRender = scheduleRender;
+window.invalidateSection = invalidateSection;
+
+// Save hook — main.ts forwards the TS debounced save through window.save.
+// The inline code calls save() everywhere; we route those through the
+// TS data layer (which still calls the inline `pushWorkspaceToCloud` via
+// the registered cloud-push hook).
+window.save = () => saveWorkspace();
+// Immediate (non-debounced) flush — used by beforeunload, visibilitychange,
+// logoutStudio, and anywhere a sync persist is required.
+(window as unknown as { saveImmediate?: () => void }).saveImmediate = () => saveWorkspace({ immediate: true });
+
+// `state` mirror — read-through getter so inline `state.events` etc.
+// resolve to the TS data layer's snapshot. The setter writes through.
+// IMPORTANT: this is installed via Object.defineProperty so it overrides
+// the inline `let state = ...` declaration (which is removed in TS-12's
+// index.html edits below).
+try {
+  Object.defineProperty(window, 'state', {
+    configurable: true,
+    enumerable: true,
+    get: () => getWorkspaceState(),
+    set: (v: WorkspaceState) => { setWorkspaceState(v); },
+  });
+} catch (_e) {
+  // If the inline `let state` ran first and defined a non-configurable
+  // property, this throws. Fall back to a normal assignment — the
+  // remaining inline code reads `state` directly via the let binding.
+  console.warn('[TS-12] state mirror via defineProperty failed (likely shadowed by inline let).');
+}
+
+// Silence unused-import warnings for accessors used only by window mirrors.
+void patchState;
+void getDirtySectionsForStateKeys;
