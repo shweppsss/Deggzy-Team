@@ -14,8 +14,10 @@
 //   TS-3  ✓  App.Instrumentation → /src/core/instrumentation.ts
 //   TS-4  ✓  render utilities → /src/lib/render-utils.ts
 //   TS-5  ✓  MiniPlayer → /src/features/mini-player.ts
-//   TS-6  ← current PR: detail overlay lifecycle → /src/features/detail/
-//   TS-7+    detail render helpers, auth, calendar
+//   TS-6  ✓  detail overlay lifecycle → /src/features/detail/
+//   TS-7  ✓  detail render helpers (per-kind, pure) → /src/features/detail/render/
+//   TS-8  ← current PR: kill detail bridge → /src/lib/format-utils.ts + /src/features/detail/domain.ts
+//   TS-9+    modals, auth, calendar
 //   TS-final HTML decomposition
 // ============================================================================
 
@@ -31,8 +33,35 @@ import {
   parseDate,
   isFutureOrToday,
 } from './lib/render-utils';
+import {
+  escapeHtml,
+  formatDate,
+  formatDateLong,
+  formatEventTime,
+  formatDuration,
+  formatEventRange,
+  formatRelativeShort,
+  timeToMins,
+  minsToTime,
+} from './lib/format-utils';
 import { MiniPlayer } from './features/mini-player';
 import { openDetail, closeDetail, bindDetailClose } from './features/detail';
+import {
+  typeLabel,
+  statusLabel,
+  todoPriority,
+  tagsToInput,
+  suggestChecklist,
+  EVENT_TYPES,
+  TODO_CATEGORIES,
+  PRIORITY_KEYS,
+  PRIORITY_LABELS,
+} from './features/detail/domain';
+import {
+  actorInitial,
+  actorColor,
+  eventActorAvatarHTML,
+} from './features/detail/event-actor';
 
 // Augment the global Window type so the legacy code that references
 // `window.App.X.*` and the bare-global helpers (icon, parseDate, etc.)
@@ -60,6 +89,30 @@ declare global {
     openDetail: typeof openDetail;
     closeDetail: typeof closeDetail;
     bindDetailClose: typeof bindDetailClose;
+    // TS-8 — format utilities
+    escapeHtml: typeof escapeHtml;
+    formatDate: typeof formatDate;
+    formatDateLong: typeof formatDateLong;
+    formatEventTime: typeof formatEventTime;
+    _formatDuration: typeof formatDuration;
+    _formatEventRange: typeof formatEventRange;
+    _formatRelativeShort: typeof formatRelativeShort;
+    _timeToMins: typeof timeToMins;
+    _minsToTime: typeof minsToTime;
+    // TS-8 — detail domain
+    typeLabel: typeof typeLabel;
+    statusLabel: typeof statusLabel;
+    todoPriority: typeof todoPriority;
+    tagsToInput: typeof tagsToInput;
+    suggestChecklist: typeof suggestChecklist;
+    EVENT_TYPES: typeof EVENT_TYPES;
+    TODO_CATEGORIES: typeof TODO_CATEGORIES;
+    PRIORITY_KEYS: typeof PRIORITY_KEYS;
+    PRIORITY_LABELS: typeof PRIORITY_LABELS;
+    // TS-8 — detail event-actor helpers
+    _actorInitial: typeof actorInitial;
+    _actorColor: typeof actorColor;
+    _eventActorAvatarHTML: typeof eventActorAvatarHTML;
   }
 }
 
@@ -105,3 +158,36 @@ window.MiniPlayer = MiniPlayer;
 window.openDetail = openDetail;
 window.closeDetail = closeDetail;
 window.bindDetailClose = bindDetailClose;
+
+// TS-8 — format utilities + detail domain constants/helpers. These were
+// originally declared with `function X()` / `const X = ...` at module
+// scope inside the inline <script>, so they live on `window` as bare
+// globals. The legacy inline call sites use them without any namespace
+// prefix (e.g. `escapeHtml(s)`, `EVENT_TYPES.map(...)`). The underscore-
+// prefixed names match the original inline names exactly so legacy
+// callers don't have to be touched.
+window.escapeHtml = escapeHtml;
+window.formatDate = formatDate;
+window.formatDateLong = formatDateLong;
+window.formatEventTime = formatEventTime;
+window._formatDuration = formatDuration;
+window._formatEventRange = formatEventRange;
+window._formatRelativeShort = formatRelativeShort;
+window._timeToMins = timeToMins;
+window._minsToTime = minsToTime;
+window.typeLabel = typeLabel;
+window.statusLabel = statusLabel;
+window.todoPriority = todoPriority;
+window.tagsToInput = tagsToInput;
+window.suggestChecklist = suggestChecklist;
+window.EVENT_TYPES = EVENT_TYPES;
+window.TODO_CATEGORIES = TODO_CATEGORIES;
+window.PRIORITY_KEYS = PRIORITY_KEYS;
+window.PRIORITY_LABELS = PRIORITY_LABELS;
+// Event-actor helpers — historically inline `function _actorInitial()` /
+// `function _actorColor()` / `function _eventActorAvatarHTML()` at module
+// scope. Re-attached on window with their original underscore-prefixed
+// names so the inline call sites in calendar/event rendering keep working.
+window._actorInitial = actorInitial;
+window._actorColor = actorColor;
+window._eventActorAvatarHTML = eventActorAvatarHTML;

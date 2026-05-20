@@ -11334,24 +11334,8 @@ function computePhase(today) {
   return { ...phases[4], label: 'Post-sortie', title: 'Projet sorti', desc: 'Le projet R.I.C.H est sorti. Bascule sur le post-rollout (anniversaire J+30, J+90, etc.).' };
 }
 
-function typeLabel(t) {
-  const map = {
-    release: 'Sortie',
-    tiktok: 'TikTok',
-    instagram: 'Instagram',
-    shoot: 'Shoot',
-    studio: 'Studio',
-    meeting: 'Meeting',
-    interview: 'Interview',
-    call: 'Call',
-    podcast: 'Podcast',
-    listening: 'Listening',
-    milestone: 'Jalon',
-    other: 'Autre',
-  };
-  return map[t] || t;
-}
-const EVENT_TYPES = ['release','tiktok','instagram','shoot','studio','meeting','interview','call','podcast','listening','milestone','other'];
+// typeLabel + EVENT_TYPES — EXTRACTED in Phase TS-8 to /src/features/detail/domain.ts.
+// Re-attached on window via /src/main.ts; inline call sites unchanged.
 
 /* ============================
    ROLES — single source of truth for team-member roles.
@@ -11490,10 +11474,8 @@ function parseTagsInput(raw) {
   });
   return out;
 }
-// Compose array back to comma-separated for display in inputs.
-function tagsToInput(arr) {
-  return Array.isArray(arr) ? arr.join(', ') : '';
-}
+// tagsToInput — EXTRACTED in Phase TS-8 to /src/features/detail/domain.ts.
+// Re-attached on window via /src/main.ts; inline call sites unchanged.
 // Color seed — stable hue per tag label so the same tag always looks the same.
 function tagColor(tag) {
   let h = 5381;
@@ -11797,19 +11779,8 @@ function _renderRoleWidgetItem(item, widget) {
 // they're a team-wide list — so this is just an identity passthrough. Kept as a
 // hook for future Phase 2B-2 where todos may grow a visibility field.
 function filterVisibleTodos(todos) { return Array.isArray(todos) ? todos.filter(Boolean) : []; }
-function formatEventTime(time) {
-  if (!time) return '';
-  return time.slice(0, 5);
-}
-
-function formatDate(s) {
-  const d = new Date(s);
-  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
-}
-function formatDateLong(s) {
-  const d = new Date(s);
-  return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-}
+// formatEventTime + formatDate + formatDateLong — EXTRACTED in Phase TS-8
+// to /src/lib/format-utils.ts. Re-attached on window via /src/main.ts.
 
 /* ============================
    CATALOGUE
@@ -12279,10 +12250,8 @@ function attachTrackEvents(id) {
   });
 }
 
-function statusLabel(s) {
-  const m = { single: 'Single hors-projet', projet: 'Sur le projet', produit: 'Produit', mixe: 'Mixé', masterise: 'Masterisé', sorti: 'Sorti' };
-  return m[s] || s;
-}
+// statusLabel — EXTRACTED in Phase TS-8 to /src/features/detail/domain.ts.
+// Re-attached on window via /src/main.ts.
 
 const STATUS_CYCLE = ['single', 'projet', 'produit', 'mixe', 'masterise', 'sorti'];
 function cycleStatus(id) {
@@ -12328,9 +12297,8 @@ async function clearAudio(id) {
   toast('Audio retiré.');
 }
 
-function escapeHtml(s) {
-  return (s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-}
+// escapeHtml — EXTRACTED in Phase TS-8 to /src/lib/format-utils.ts.
+// Re-attached on window via /src/main.ts.
 
 /* SWIPE-TO-DELETE — generic gesture handler for cards */
 const _swipeBound = new WeakSet();
@@ -12502,37 +12470,10 @@ function _getMondayOf(d) {
   out.setDate(out.getDate() - dow);
   return out;
 }
-// Convert "HH:MM" → minutes since midnight, "" or null → null
-function _timeToMins(t) {
-  if (!t || typeof t !== 'string') return null;
-  const [h, m] = t.split(':').map(Number);
-  if (isNaN(h)) return null;
-  return h * 60 + (isNaN(m) ? 0 : m);
-}
-function _minsToTime(mins) {
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
-}
-// "1 h 30" / "45 min" / "2 h" — compact French label for event duration.
-function _formatDuration(mins) {
-  const n = Math.max(0, parseInt(mins, 10) || 0);
-  if (n === 0) return '';
-  if (n < 60) return n + ' min';
-  const h = Math.floor(n / 60);
-  const m = n % 60;
-  if (m === 0) return h + ' h';
-  return h + ' h ' + String(m).padStart(2, '0');
-}
-// "14:00 – 15:30" given a start time + duration. Empty string if no time.
-function _formatEventRange(time, durationMins) {
-  if (!time) return '';
-  const start = _timeToMins(time);
-  if (start == null) return '';
-  const dur = parseInt(durationMins, 10) || 60;
-  const end = Math.min(24 * 60 - 1, start + dur);
-  return formatEventTime(time) + ' – ' + formatEventTime(_minsToTime(end));
-}
+// _timeToMins + _minsToTime + _formatDuration + _formatEventRange — EXTRACTED
+// in Phase TS-8 to /src/lib/format-utils.ts. Re-attached on window with
+// their original underscore-prefixed names via /src/main.ts so the many
+// legacy call sites work unchanged.
 
 // Day is considered overloaded above this count. Tuned so the typical 1–3
 // events/day stay calm and only genuinely packed days flag.
@@ -13517,54 +13458,8 @@ function _stampEventUpdate(ev) {
 // First letter of the actor's name, uppercase. Used in the round avatar
 // circles on event pills. Returns '?' when no actor info is attached
 // (legacy events created before this PR shipped).
-function _actorInitial(actor) {
-  if (!actor || !actor.name) return '?';
-  return actor.name.trim().charAt(0).toUpperCase() || '?';
-}
-// Stable color from a user-id so a given user always gets the same avatar
-// color across reloads. Hash → 0-359 hue, fixed S/L for legibility on the
-// dark surface palette.
-function _actorColor(actor) {
-  const seed = (actor && actor.id) || (actor && actor.name) || 'anon';
-  let h = 5381;
-  for (let i = 0; i < seed.length; i++) h = ((h * 33) ^ seed.charCodeAt(i)) >>> 0;
-  return 'hsl(' + (h % 360) + ', 62%, 55%)';
-}
-// Short relative date like "il y a 2j" / "à l'instant" / "hier" for the
-// detail-pane credit block. Falls back to the absolute date if the input
-// isn't a parseable ISO string.
-function _formatRelativeShort(iso) {
-  if (!iso) return '';
-  const t = Date.parse(iso);
-  if (isNaN(t)) return '';
-  const diffSec = Math.floor((Date.now() - t) / 1000);
-  if (diffSec < 45) return 'à l\'instant';
-  if (diffSec < 90) return 'il y a 1 min';
-  const min = Math.floor(diffSec / 60);
-  if (min < 60) return 'il y a ' + min + ' min';
-  if (min < 120) return 'il y a 1 h';
-  const h = Math.floor(min / 60);
-  if (h < 24) return 'il y a ' + h + ' h';
-  const d = Math.floor(h / 24);
-  if (d < 2) return 'hier';
-  if (d < 7) return 'il y a ' + d + ' j';
-  // Beyond a week → absolute short date
-  return new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: t < Date.now() - 365*24*3600*1000 ? 'numeric' : undefined });
-}
-// HTML for the small circular avatar with the user's first initial.
-// `extraClass` lets the caller tag it with a size variant.
-function _eventActorAvatarHTML(actor, extraClass) {
-  if (!actor) return '';
-  const initial = _actorInitial(actor);
-  const color = _actorColor(actor);
-  const cls = 'cal-event-avatar' + (extraClass ? ' ' + extraClass : '');
-  const title = actor.name ? escapeHtml(actor.name) : '';
-  // data-actor-id powers upgradeEventAvatars(): after render the async pass
-  // replaces the initial+colour background with the user's photo when one is
-  // cached in IDB. The initial stays as the immediate, sync render.
-  const actorId = actor.id ? escapeHtml(actor.id) : '';
-  return `<span class="${cls}" data-actor-id="${actorId}" style="background:${color}" title="${title}">${escapeHtml(initial)}</span>`;
-}
+// _actorInitial + _actorColor + _eventActorAvatarHTML — EXTRACTED in Phase TS-8
+// to /src/features/detail/event-actor.ts. Re-attached on window via /src/main.ts.
 // Full tooltip line for the pill — shown via the title attribute.
 // "Créé par Chouaib • il y a 2 j · Modifié par Degzzy • à l'instant"
 function _eventTooltip(ev) {
@@ -14896,7 +14791,8 @@ function setupProfileAliasEdit() {
 /* ============================
    TODOS
    ============================ */
-const TODO_CATEGORIES = ['Pre-Launch', 'Rollout', 'Pivot', 'Élévation', 'Événement', 'Autre'];
+// TODO_CATEGORIES — EXTRACTED in Phase TS-8 to /src/features/detail/domain.ts.
+// Re-attached on window via /src/main.ts.
 
 function renderTodos() {
   const todos = state.todos || [];
@@ -16411,23 +16307,8 @@ function resetBudget() {
 // detailEventHTML — EXTRACTED in Phase TS-7 to /src/features/detail/render/event.ts.
 // Pure renderer (entity, deps, ctx) => string. Called by lifecycle.ts.
 
-function suggestChecklist(type) {
-  const map = {
-    release: ['Cover prête et uploadée sur le distributeur', 'Pre-save activé J-14', 'Visualizer prêt (vertical + horizontal)', 'Snippet teaser publié J-7', 'Post IG officiel + reel le jour J', 'TikTok face cam « c\'est sorti » le jour J', '3-4 contenus secondaires sur J+1 à J+7'],
-    tiktok: ['Hook fort dans les 3 premières secondes', 'Texte à l\'écran (caption)', 'Sound original poussé', 'Format vertical 9:16', 'Heure de pub : 18h-21h en semaine'],
-    instagram: ['Cohérence avec la charte visuelle', 'Caption travaillée + 3-5 hashtags max', 'Story relais + countdown si pertinent', 'Tag des collaborateurs (vidéaste, DA, photographe)'],
-    shoot: ['Briefer photographe / vidéaste 48h avant', 'Repérage / moodboard validé', 'Wardrobe préparé', 'Plan de prise de vue', 'Backup HDD prévu'],
-    studio: ['Beat / instru validés', 'Voix / textes prêts', 'Cabine réservée', 'Ingé son confirmé', 'Backup du projet en fin de session'],
-    meeting: ['Ordre du jour préparé', 'Documents / pitch en pièces jointes', 'Confirmer 24h avant', 'Définir les next steps avant de partir', 'Prendre des notes / compte-rendu'],
-    interview: ['Brief sur le média / journaliste', 'Anecdotes / punchlines à raconter prêtes', 'Tenue + look check', 'Arriver 15 min avant', 'Confirmer date de publication'],
-    call: ['Définir l\'objectif en 1 phrase', 'Préparer 2-3 questions clés', 'Bloquer 30 min calmes', 'Envoyer le récap par écrit après'],
-    podcast: ['Écouter 1 épisode pour le ton', 'Préparer 3 sujets forts', 'Tenue audio cohérente (pas trop de bruits parasites)', 'Demander la date de diffusion', 'Préparer un teaser pour repost'],
-    listening: ['Sélection morceaux finalisée', 'Setup son testé (bonne enceinte / casque)', 'Invitations envoyées', 'Boisson / ambiance prévues', 'Recueillir les retours à chaud'],
-    milestone: ['Communication équipe', 'Update du dashboard', 'Activer la suite des actions liées'],
-    other: ['À détailler dans les notes'],
-  };
-  return map[type] || map.other;
-}
+// suggestChecklist — EXTRACTED in Phase TS-8 to /src/features/detail/domain.ts.
+// Re-attached on window via /src/main.ts.
 
 function updateEventField(id, field, value) {
   const e = state.events.find(x => x.id === id);
@@ -16548,19 +16429,8 @@ function addEventForTrack(trackId) {
    so unmigrated todos render correctly. ensureTodoPriorityMigration() does
    the one-time data migration on next save.
    ============================ */
-const PRIORITY_KEYS = ['critique', 'urgent', 'important', 'normal'];
-const PRIORITY_LABELS = {
-  critique:  '⛔ Critique',
-  urgent:    '⚡ Urgent',
-  important: '◇ Important',
-  normal:    'Normal',
-};
-function todoPriority(t) {
-  if (!t) return 'normal';
-  if (PRIORITY_KEYS.includes(t.priority)) return t.priority;
-  // Legacy mapping: urgent:true → 'urgent', otherwise 'normal'.
-  return t.urgent === true ? 'urgent' : 'normal';
-}
+// PRIORITY_KEYS + PRIORITY_LABELS + todoPriority — EXTRACTED in Phase TS-8
+// to /src/features/detail/domain.ts. Re-attached on window via /src/main.ts.
 function updateTodoPriority(id, value) {
   const t = state.todos.find(x => x.id === id);
   if (!t) return;

@@ -45,35 +45,18 @@ import {
   type MemberEntity,
   type PhaseEntity,
 } from './render';
+import { typeLabel } from './domain';
+import { Runtime } from '../../core/runtime';
+import {
+  getLegacyState,
+  getLegacyPhases,
+  callLegacyRenderView,
+  type BridgedState,
+  type BridgedEntity,
+} from '../../lib/legacy-bridge';
 
-interface EntityWithId {
-  id: string;
-  [key: string]: unknown;
-}
-
-interface StateLike {
-  events?: EntityWithId[];
-  tracks?: EntityWithId[];
-  todos?: EntityWithId[];
-  inspirations?: EntityWithId[];
-  team?: EntityWithId[];
-}
-
-interface AppRuntimeLike {
-  qsa: (sel: string) => Element[];
-}
-
-type Win = Window & {
-  state?: StateLike;
-  PHASES?: Record<string, unknown>;
-  typeLabel?: (t: string | undefined) => string;
-  renderView?: (name: string) => void;
-  App?: { Runtime?: AppRuntimeLike };
-};
-
-function w(): Win {
-  return window as unknown as Win;
-}
+type EntityWithId = BridgedEntity;
+type StateLike = BridgedState;
 
 function findById(list: EntityWithId[] | undefined, id: string): EntityWithId | undefined {
   if (!Array.isArray(list)) return undefined;
@@ -137,15 +120,14 @@ function findPhaseTodos(state: StateLike, phaseIdx: string): Array<{ id: string;
 //   - looking up related entities (still in legacy state)
 //   - calling the appropriate pure renderer with a RenderDeps snapshot
 function resolveKind(kind: DetailKind, id: string): { kindLabel: string; html: string } | null {
-  const state = w().state || {};
+  const state = getLegacyState();
   const deps = getRenderDeps();
 
   switch (kind) {
     case 'event': {
       const e = findById(state.events, id) as EventEntity | undefined;
       if (!e) return null;
-      const labelFn = w().typeLabel;
-      const kindLabel = typeof labelFn === 'function' ? labelFn(e.type) : '';
+      const kindLabel = typeLabel(e.type);
       const relatedTrack = findRelatedTrack(state, e.title);
       return { kindLabel, html: renderEvent(e, deps, { relatedTrack }) };
     }
@@ -180,8 +162,7 @@ function resolveKind(kind: DetailKind, id: string): { kindLabel: string; html: s
       return { kindLabel: 'Équipe', html: renderMember(m, deps) };
     }
     case 'phase': {
-      const phases = w().PHASES;
-      if (!phases) return null;
+      const phases = getLegacyPhases();
       const p = phases[id] as PhaseEntity | undefined;
       if (!p) return null;
       const relatedTodos = findPhaseTodos(state, id);
@@ -205,10 +186,7 @@ function resolveKind(kind: DetailKind, id: string): { kindLabel: string; html: s
 // point for the dynamic buttons; the static back button gets caught on
 // first call and is then skipped.
 export function bindDetailClose(): void {
-  const R = w().App?.Runtime;
-  const buttons: Element[] = R
-    ? R.qsa('[data-detail-close]')
-    : Array.from(document.querySelectorAll('[data-detail-close]'));
+  const buttons: Element[] = Runtime.qsa('[data-detail-close]');
   buttons.forEach((btn) => {
     const el = btn as HTMLElement;
     if (el.dataset.detailCloseBound === '1') return;
@@ -263,8 +241,7 @@ export function closeDetail(): void {
   document.body.style.overflow = '';
   // Re-render current view (in case data was modified).
   const activeNav = document.querySelector<HTMLElement>('.nav-item.active');
-  const renderView = w().renderView;
-  if (activeNav && typeof renderView === 'function') {
-    renderView(activeNav.dataset.view || '');
+  if (activeNav) {
+    callLegacyRenderView(activeNav.dataset.view || '');
   }
 }
