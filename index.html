@@ -10523,7 +10523,12 @@ const ROLES = [
     relevantEventTypes: ['release','tiktok','instagram','milestone'],
     relevantCategories: ['Rollout','Pivot','Élévation','Événement'] },
   { key: 'autre',             label: 'Autre',             aliases: ['autre','other',''],
-    relevantEventTypes: EVENT_TYPES,
+    // Inlined verbatim from /src/features/detail/domain.ts → EVENT_TYPES.
+    // The TS module attaches `window.EVENT_TYPES` later (deferred), but
+    // this top-level const is evaluated at inline-script load time, so
+    // referencing the bare global would ReferenceError. Mirror the list
+    // here. Keep in sync with the TS source if it ever changes.
+    relevantEventTypes: ['release','tiktok','instagram','shoot','studio','meeting','interview','call','podcast','listening','milestone','other'],
     relevantCategories: ['Pre-Launch','Rollout','Pivot','Élévation','Événement','Autre'] },
 ];
 const ROLE_BY_KEY = Object.fromEntries(ROLES.map(r => [r.key, r]));
