@@ -121,6 +121,25 @@ import {
   TEAM_SECTION,
   type SectionId,
 } from './render';
+// TS-13C — calendar render module.
+import {
+  renderCalendarView,
+  registerCalendarInteractionHooks,
+  expandEventsForWindow,
+  detectEventConflicts,
+  eventsOverlap as calEventsOverlap,
+  OVERLOAD_THRESHOLD,
+  type CalendarDeps,
+} from './render/calendar';
+import {
+  toIsoDate,
+  parseIsoDate,
+  getMondayOf,
+  addDays,
+  diffDays,
+  isoMin,
+  isoMax,
+} from './render/shared/dates';
 import {
   // session
   getCurrentUser,
@@ -271,6 +290,19 @@ declare global {
     mergeWorkspaceStates: typeof mergeWorkspaceStates;
     loadState: () => WorkspaceState;
     saveImmediate?: () => void;
+    // TS-13C — calendar render module + shared dates re-exposed for inline.
+    renderCalendar: () => void;
+    _isoDate: typeof toIsoDate;
+    _parseIso: typeof parseIsoDate;
+    _getMondayOf: typeof getMondayOf;
+    _addDays: typeof addDays;
+    _diffDays: typeof diffDays;
+    _isoMin: typeof isoMin;
+    _isoMax: typeof isoMax;
+    _eventsOverlap: typeof calEventsOverlap;
+    detectEventConflicts: typeof detectEventConflicts;
+    expandEventsForWindow: typeof expandEventsForWindow;
+    OVERLOAD_THRESHOLD: typeof OVERLOAD_THRESHOLD;
   }
 }
 
@@ -668,7 +700,54 @@ registerSectionRenderer(DASHBOARD_SECTION,     callInlineRender('renderDashboard
 registerSectionRenderer('profile',             callInlineRender('renderProfile'));
 registerSectionRenderer(TODOS_SECTION,         callInlineRender('renderTodos'));
 registerSectionRenderer('catalogue',           callInlineRender('renderCatalogue'));
-registerSectionRenderer(CALENDAR_SECTION,      callInlineRender('renderCalendar'));
+// TS-13C — calendar uses the TS render path. main.ts builds the
+// CalendarDeps snapshot lazily on each render by reading the legacy
+// inline helpers off window.
+function _buildCalendarDeps(): CalendarDeps {
+  type LegacyHelpers = {
+    _eventTooltip?: (e: unknown) => string;
+    tagChipsHTML?: (tags: unknown, opts?: { limit?: number }) => string;
+    _entityMatchesTagFilter?: (e: unknown) => boolean;
+    filterVisibleEvents?: (events: unknown[]) => unknown[];
+    _eventActorAvatarHTML?: (actor: unknown, extraClass?: string) => string;
+  };
+  const w = window as unknown as LegacyHelpers;
+  const deps: CalendarDeps = {
+    eventTooltip: (e: unknown) => (typeof w._eventTooltip === 'function' ? w._eventTooltip(e) : ''),
+    tagChipsHTML: (tags: unknown, opts?: { limit?: number }) => (typeof w.tagChipsHTML === 'function' ? w.tagChipsHTML(tags, opts) : ''),
+    entityMatchesTagFilter: (e: unknown) => (typeof w._entityMatchesTagFilter === 'function' ? !!w._entityMatchesTagFilter(e) : true),
+    filterVisibleEvents: ((events: unknown[]) => (typeof w.filterVisibleEvents === 'function' ? w.filterVisibleEvents(events) : events)) as CalendarDeps['filterVisibleEvents'],
+    eventActorAvatarHTML: (actor: unknown) => (typeof w._eventActorAvatarHTML === 'function' ? w._eventActorAvatarHTML(actor) : ''),
+  };
+  return deps;
+}
+registerSectionRenderer(CALENDAR_SECTION, () => {
+  renderCalendarView(_buildCalendarDeps());
+});
+
+// Register the inline drag-handler attach functions as the calendar's
+// interaction hooks. The TS render module calls these after each render
+// pass so the freshly-mounted pills become draggable again.
+registerCalendarInteractionHooks({
+  attachWeekInteractions: () => {
+    const w = window as unknown as { attachWeekInteractions?: () => void };
+    if (typeof w.attachWeekInteractions === 'function') w.attachWeekInteractions();
+  },
+  attachMonthInteractions: () => {
+    const w = window as unknown as { attachCalendarInteractions?: () => void };
+    if (typeof w.attachCalendarInteractions === 'function') w.attachCalendarInteractions();
+  },
+  upgradeEventAvatars: async () => {
+    const w = window as unknown as { upgradeEventAvatars?: () => Promise<void> };
+    if (typeof w.upgradeEventAvatars === 'function') {
+      try { await w.upgradeEventAvatars(); } catch (_e) { /* no-op */ }
+    }
+  },
+  renderTagsBar: () => {
+    const w = window as unknown as { renderTagsBar?: () => void };
+    if (typeof w.renderTagsBar === 'function') w.renderTagsBar();
+  },
+});
 registerSectionRenderer(INSPIRATIONS_SECTION,  callInlineRender('renderInspirations'));
 registerSectionRenderer('clips',               callInlineRender('renderClips'));
 registerSectionRenderer('capsules',            callInlineRender('renderCapsules'));
@@ -708,6 +787,24 @@ window.save = () => saveWorkspace();
 // Immediate (non-debounced) flush — used by beforeunload, visibilitychange,
 // logoutStudio, and anywhere a sync persist is required.
 (window as unknown as { saveImmediate?: () => void }).saveImmediate = () => saveWorkspace({ immediate: true });
+
+// TS-13C — calendar render entry point + shared dates re-exposed on
+// window. The inline `renderCalendar()` (still in index.html, thin
+// shim) delegates to `window.renderCalendar` which is now the TS view.
+window.renderCalendar = () => {
+  renderCalendarView(_buildCalendarDeps());
+};
+window._isoDate = toIsoDate;
+window._parseIso = parseIsoDate;
+window._getMondayOf = getMondayOf;
+window._addDays = addDays;
+window._diffDays = diffDays;
+window._isoMin = isoMin;
+window._isoMax = isoMax;
+window._eventsOverlap = calEventsOverlap;
+window.detectEventConflicts = detectEventConflicts;
+window.expandEventsForWindow = expandEventsForWindow;
+window.OVERLOAD_THRESHOLD = OVERLOAD_THRESHOLD;
 
 // `state` mirror — read-through getter so inline `state.events` etc.
 // resolve to the TS data layer's snapshot. The setter writes through.

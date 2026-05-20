@@ -12037,27 +12037,19 @@ function swipeDeleteMember(id) {
 /* ============================
    CALENDAR
    ============================ */
-/* CALENDAR — dispatcher. Two views available:
-   • month: classic month grid (the original implementation below)
-   • week: Apple-style hourly timeline 7h-23h × 7 days, drag events anywhere */
+/* CALENDAR — dispatcher. Two views (month + week).
+   EXTRACTED in Phase TS-13C to /src/render/calendar/. The TS path:
+   - sweeps drag ghosts (drag-preview.ts)
+   - syncs the month/week toggle (grid.ts)
+   - calls buildMonthView() or buildWeekView() to compose HTML
+   - mounts via innerHTML
+   - calls back into the inline attach functions for drag/drop handlers
+   The inline `renderCalendar()` is kept as a thin shim that delegates
+   to window.renderCalendar (set by /src/main.ts to the TS impl). */
 function renderCalendar() {
-  // Orphan sweep — if a drag was interrupted by a mid-drag re-render (e.g. a
-  // realtime sync arrived while the user was dragging), the floating ghost
-  // (parented to document.body, not the grid) survives the innerHTML replace
-  // and stays stuck on screen. Wipe any leftover here before drawing.
-  document.querySelectorAll('.cal-event-ghost').forEach(g => g.remove());
-  document.querySelectorAll('.cal-event-dragging').forEach(p => p.classList.remove('cal-event-dragging'));
-  document.querySelectorAll('.cal-cell-droptarget').forEach(c => c.classList.remove('cal-cell-droptarget'));
-
-  // Make sure the toggle reflects current state
-  const monthTab = document.getElementById('calViewMonth');
-  const weekTab = document.getElementById('calViewWeek');
-  if (monthTab && weekTab) {
-    monthTab.classList.toggle('active', state.calView !== 'week');
-    weekTab.classList.toggle('active', state.calView === 'week');
+  if (typeof window.renderCalendar === 'function' && window.renderCalendar !== renderCalendar) {
+    return window.renderCalendar();
   }
-  if (state.calView === 'week') return renderWeekView();
-  return renderMonthView();
 }
 
 function setCalView(view) {
@@ -12083,306 +12075,17 @@ function changeCalRange(delta) {
   renderCalendar();
 }
 
-// Helpers — keep them tight, no external deps
-function _isoDate(d) {
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-}
-function _parseIso(s) {
-  const [y, m, d] = s.split('-').map(Number);
-  return new Date(y, m - 1, d);
-}
-function _getMondayOf(d) {
-  const out = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const dow = (out.getDay() + 6) % 7; // 0 = Monday
-  out.setDate(out.getDate() - dow);
-  return out;
-}
-// _timeToMins + _minsToTime + _formatDuration + _formatEventRange — EXTRACTED
-// in Phase TS-8 to /src/lib/format-utils.ts. Re-attached on window with
-// their original underscore-prefixed names via /src/main.ts so the many
-// legacy call sites work unchanged.
+// Date helpers (_isoDate / _parseIso / _getMondayOf / _addDays / _diffDays /
+// _isoMin / _isoMax) — EXTRACTED in Phase TS-13C to /src/render/shared/dates.ts.
+// Overlap + expansion (OVERLOAD_THRESHOLD / _eventsOverlap / detectEventConflicts /
+// _conflictTooltip / RECURRENCE_HORIZON_DAYS / _expandMultiDay / _stepRecurrence /
+// _expandRecurrence / expandEventsForWindow) — EXTRACTED in Phase TS-13C to
+// /src/render/calendar/calculations.ts. All re-attached on window via /src/main.ts.
 
-// Day is considered overloaded above this count. Tuned so the typical 1–3
-// events/day stay calm and only genuinely packed days flag.
-const OVERLOAD_THRESHOLD = 5;
-
-// Two timed events on the same day overlap when their [start, end) intervals
-// intersect. All-day (no time) entries never count as a conflict — they share
-// the day with everything else by design.
-function _eventsOverlap(a, b) {
-  if (!a || !b || a.date !== b.date) return false;
-  if (!a.time || !b.time) return false;
-  const aStart = _timeToMins(a.time);
-  const bStart = _timeToMins(b.time);
-  if (aStart == null || bStart == null) return false;
-  const aEnd = aStart + (parseInt(a.duration, 10) || 60);
-  const bEnd = bStart + (parseInt(b.duration, 10) || 60);
-  return aStart < bEnd && bStart < aEnd;
-}
-
-// Returns a Map<eventId, Array<conflictingEvent>> for events that overlap with
-// at least one other event on the same day. O(n²) per-day — fine at our scale.
-function detectEventConflicts(events) {
-  const conflicts = new Map();
-  const byDate = {};
-  for (const e of events) {
-    if (!e || !e.date) continue;
-    (byDate[e.date] = byDate[e.date] || []).push(e);
-  }
-  for (const date in byDate) {
-    const day = byDate[date];
-    for (let i = 0; i < day.length; i++) {
-      for (let j = i + 1; j < day.length; j++) {
-        if (_eventsOverlap(day[i], day[j])) {
-          if (!conflicts.has(day[i].id)) conflicts.set(day[i].id, []);
-          if (!conflicts.has(day[j].id)) conflicts.set(day[j].id, []);
-          conflicts.get(day[i].id).push(day[j]);
-          conflicts.get(day[j].id).push(day[i]);
-        }
-      }
-    }
-  }
-  return conflicts;
-}
-
-function _conflictTooltip(others) {
-  if (!others || !others.length) return '';
-  const names = others.map(o => o.title || 'Sans titre').join(', ');
-  return 'Conflit avec : ' + names;
-}
-
-/* ============================
-   MULTI-DAY + RECURRENCE
-   Events can carry an optional `endDate` (multi-day span) and an optional
-   `recurrence` object `{ freq: 'daily'|'weekly'|'monthly', until?: 'YYYY-MM-DD' }`.
-   Both are flattened to per-day virtual instances at render time only —
-   nothing here mutates `state.events`. Virtual instances share the parent's
-   id (so `openDetail`/edit/drag still resolve to the real event) and carry
-   render-only `_isVirtual` / `_spanIndex` / `_spanTotal` / `_isRecurring`
-   flags used by the renderers.
-   Horizon clamp at 730 days keeps a pathological "daily, no until" from
-   exploding into thousands of pills.
-   ============================ */
-const RECURRENCE_HORIZON_DAYS = 730;
-
-function _addDays(iso, n) {
-  const d = _parseIso(iso);
-  if (!d) return iso;
-  d.setDate(d.getDate() + n);
-  return _isoDate(d);
-}
-function _diffDays(aIso, bIso) {
-  const a = _parseIso(aIso), b = _parseIso(bIso);
-  if (!a || !b) return 0;
-  return Math.round((b - a) / 86400000);
-}
-function _isoMin(a, b) { return (a && b) ? (a < b ? a : b) : (a || b); }
-function _isoMax(a, b) { return (a && b) ? (a > b ? a : b) : (a || b); }
-
-// Generates one virtual event per day for a multi-day span. Single-day events
-// return as-is (no flags added). Virtual instances mirror the parent's fields
-// 1:1 except `date`, and gain `_spanIndex`/`_spanTotal` for renderer hints.
-function _expandMultiDay(ev) {
-  if (!ev || !ev.endDate || ev.endDate <= ev.date) return [ev];
-  const span = _diffDays(ev.date, ev.endDate) + 1;
-  if (span <= 1) return [ev];
-  const out = [];
-  for (let i = 0; i < span; i++) {
-    const day = _addDays(ev.date, i);
-    out.push(Object.assign({}, ev, {
-      date: day,
-      _isVirtual: true,
-      _spanIndex: i,
-      _spanTotal: span,
-    }));
-  }
-  return out;
-}
-
-// Steps the recurrence forward one tick. Returns null if the next step would
-// exceed RECURRENCE_HORIZON_DAYS or the recurrence's own `until` cap.
-function _stepRecurrence(iso, freq) {
-  const d = _parseIso(iso);
-  if (!d) return null;
-  if (freq === 'daily')   d.setDate(d.getDate() + 1);
-  else if (freq === 'weekly')  d.setDate(d.getDate() + 7);
-  else if (freq === 'monthly') d.setMonth(d.getMonth() + 1);
-  else return null;
-  return _isoDate(d);
-}
-
-// Generates the set of occurrences inside [windowStart, windowEnd]. Each
-// occurrence is itself passed through _expandMultiDay so a recurring 3-day
-// shoot expands into [N occurrences] × [3 days]. Non-recurring events return
-// their multi-day expansion (still a no-op for the single-day common case).
-function _expandRecurrence(ev, windowStart, windowEnd) {
-  if (!ev) return [];
-  const rec = ev.recurrence;
-  if (!rec || !rec.freq || rec.freq === 'none') return _expandMultiDay(ev);
-  const horizonEnd = _addDays(ev.date, RECURRENCE_HORIZON_DAYS);
-  const lastAllowed = _isoMin(windowEnd, _isoMin(rec.until || horizonEnd, horizonEnd));
-  const occurrences = [];
-  let cur = ev.date;
-  let safety = 0;
-  while (cur && cur <= lastAllowed && safety++ < 2000) {
-    // Only include occurrences whose span intersects the window
-    const occ = Object.assign({}, ev, { date: cur, _isRecurring: true });
-    const expanded = _expandMultiDay(occ);
-    for (const v of expanded) {
-      if (v.date >= windowStart && v.date <= windowEnd) occurrences.push(v);
-    }
-    cur = _stepRecurrence(cur, rec.freq);
-  }
-  return occurrences;
-}
-
-// Flattens an event list into renderable per-day virtual instances within
-// [windowStart, windowEnd]. Used by both month and week renderers.
-function expandEventsForWindow(events, windowStart, windowEnd) {
-  if (!Array.isArray(events)) return [];
-  const out = [];
-  for (const ev of events) {
-    if (!ev || !ev.date) continue;
-    const rec = ev.recurrence;
-    if (rec && rec.freq && rec.freq !== 'none') {
-      const expanded = _expandRecurrence(ev, windowStart, windowEnd);
-      for (const v of expanded) out.push(v);
-    } else if (ev.endDate && ev.endDate > ev.date) {
-      const expanded = _expandMultiDay(ev);
-      for (const v of expanded) {
-        if (v.date >= windowStart && v.date <= windowEnd) out.push(v);
-      }
-    } else {
-      if (ev.date >= windowStart && ev.date <= windowEnd) out.push(ev);
-    }
-  }
-  return out;
-}
-
-function renderWeekView() {
-  const grid = document.getElementById('calendarGrid');
-  if (!grid) return;
-  // Reset month-grid CSS (was display:grid 7 cols). Week view has its own .cal-week class.
-  grid.className = 'cal-week';
-  grid.style.gridTemplateColumns = ''; // let .cal-week CSS take over
-
-  const START_HOUR = 7;   // matches CSS --week-start-h
-  const END_HOUR = 23;    // exclusive
-  const HOUR_ROWS = END_HOUR - START_HOUR;
-  const HOUR_HEIGHT = 56; // px — matches CSS --week-hour-h
-
-  // Resolve current Monday
-  const monday = _parseIso(state.calWeekStart || _isoDate(_getMondayOf(new Date())));
-  const days = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(monday); d.setDate(monday.getDate() + i);
-    days.push(d);
-  }
-  // Header label = "5 - 11 mai 2026" (locale-friendly span)
-  const headerEl = document.getElementById('calMonth');
-  if (headerEl) {
-    const first = days[0], last = days[6];
-    const sameMonth = first.getMonth() === last.getMonth();
-    const fmt = (d, withMonth) => withMonth
-      ? d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
-      : d.getDate();
-    headerEl.textContent = sameMonth
-      ? fmt(first, false) + '–' + fmt(last, true)
-      : fmt(first, true) + ' – ' + fmt(last, true);
-  }
-
-  // Build HTML
-  const todayIso = _isoDate(new Date());
-  const dayNames = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
-  // Expand multi-day + recurring events for the week window, then we keep the
-  // per-day filtering identical to the previous loop.
-  const weekStartIso = _isoDate(days[0]);
-  const weekEndIso = _isoDate(days[6]);
-  const expandedWeek = expandEventsForWindow(state.events, weekStartIso, weekEndIso);
-  let html = '<div class="cal-week-gutter-head"></div>';
-  for (let i = 0; i < 7; i++) {
-    const iso = _isoDate(days[i]);
-    html += `<div class="cal-week-head ${iso === todayIso ? 'today' : ''}">
-      ${dayNames[i]}
-      <div class="cal-week-head-day">${days[i].getDate()}</div>
-    </div>`;
-  }
-  // Gutter column with hour labels
-  html += '<div class="cal-week-gutter">';
-  for (let h = START_HOUR; h < END_HOUR; h++) {
-    html += `<div class="cal-week-gutter-cell">${String(h).padStart(2,'0')}:00</div>`;
-  }
-  html += '</div>';
-  // 7 day columns with hour slots + positioned events
-  for (let i = 0; i < 7; i++) {
-    const iso = _isoDate(days[i]);
-    const todayCls = iso === todayIso ? 'today' : '';
-    html += `<div class="cal-week-day ${todayCls}" data-date="${iso}">`;
-    for (let h = START_HOUR; h < END_HOUR; h++) {
-      html += `<div class="cal-week-hour-slot" data-date="${iso}" data-hour="${h}"></div>`;
-    }
-    // Events whose date matches this day, filtered by visibility (private events
-    // owned by other users are hidden). Uses the pre-expanded window so multi-day
-    // spans and recurring occurrences appear on each of their days.
-    const evs = filterVisibleEvents(expandedWeek).filter(e => e.date === iso);
-    const conflicts = detectEventConflicts(evs);
-    for (const e of evs) {
-      let mins = _timeToMins(e.time);
-      let allDay = false;
-      if (mins === null) { mins = START_HOUR * 60; allDay = true; }
-      const minutesFromTop = Math.max(0, mins - START_HOUR * 60);
-      const top = (minutesFromTop / 60) * HOUR_HEIGHT;
-      // All-day events keep the visual 1h slot height; timed events use their stored duration.
-      const heightMins = allDay ? 60 : Math.max(15, parseInt(e.duration, 10) || 60);
-      const height = (heightMins / 60) * HOUR_HEIGHT - 4;
-      const timeLabel = allDay
-        ? 'Toute la journée'
-        : (e.time ? _formatEventRange(e.time, heightMins) : '');
-      const conflictWith = conflicts.get(e.id);
-      const baseTip = _eventTooltip(e);
-      const conflictTip = _conflictTooltip(conflictWith);
-      const spanTip = (e._spanTotal && e._spanTotal > 1)
-        ? `Jour ${e._spanIndex + 1} / ${e._spanTotal}`
-        : '';
-      const tip = [baseTip, conflictTip, spanTip].filter(Boolean).join(' — ');
-      const conflictCls = conflictWith ? ' conflict' : '';
-      const recurringCls = e._isRecurring ? ' is-recurring' : '';
-      const spanCls = e._spanTotal && e._spanTotal > 1
-        ? (e._spanIndex === 0
-            ? ' is-span-start'
-            : (e._spanIndex === e._spanTotal - 1 ? ' is-span-end' : ' is-span-mid'))
-        : '';
-      const avatar = e.createdBy ? _eventActorAvatarHTML(e.createdBy) : '';
-      // Resize handle hidden for all-day pills (no duration semantic).
-      // Also hidden on mid/end span days — duration belongs to the parent event,
-      // resizing a non-anchor cell would be confusing.
-      const resizeHandle = (allDay || spanCls) ? '' : '<div class="cal-week-event-resize" data-resize-handle="1"></div>';
-      // Per-event tag filter — skip rendering if it doesn't match the active tag.
-      if (!_entityMatchesTagFilter(e)) continue;
-      html += `<div class="cal-week-event${conflictCls}${recurringCls}${spanCls}" data-type="${escapeHtml(e.type)}" data-visibility="${e.visibility === 'private' ? 'private' : 'team'}" data-event-id="${escapeHtml(e.id)}"
-                    style="top:${top + 2}px; height:${height}px;"${tip ? ` title="${escapeHtml(tip)}"` : ''}>
-        ${avatar ? `<div class="cal-week-event-actor">${avatar}</div>` : ''}
-        ${timeLabel ? `<div class="cal-week-event-time">${timeLabel}</div>` : ''}
-        <div class="cal-week-event-title">${escapeHtml(e.title)}</div>
-        ${resizeHandle}
-      </div>`;
-    }
-    // Current-time red line (only on today)
-    if (iso === todayIso) {
-      const now = new Date();
-      const nowMins = now.getHours() * 60 + now.getMinutes();
-      if (nowMins >= START_HOUR * 60 && nowMins < END_HOUR * 60) {
-        const offset = ((nowMins - START_HOUR * 60) / 60) * HOUR_HEIGHT;
-        html += `<div class="cal-week-now-line" style="top:${offset}px;"></div>`;
-      }
-    }
-    html += '</div>';
-  }
-  grid.innerHTML = html;
-  attachWeekInteractions();
-  if (typeof upgradeEventAvatars === 'function') upgradeEventAvatars().catch(() => {});
-  if (typeof renderTagsBar === 'function') renderTagsBar();
-}
+// renderWeekView — EXTRACTED in Phase TS-13C to /src/render/calendar/grid.ts
+// + /src/render/calendar/week.ts. The TS path orchestrates the same flow
+// (sweep ghosts → compose HTML → mount → attach interactions) through
+// the typed render pipeline.
 
 function attachWeekInteractions() {
   const grid = document.getElementById('calendarGrid');
@@ -12652,95 +12355,9 @@ function _cleanupWeekResize(e) {
   }
 }
 
-function renderMonthView() {
-  // Restore month-grid layout
-  const grid = document.getElementById('calendarGrid');
-  if (grid) {
-    grid.className = 'calendar-grid';
-  }
-  const [year, month] = state.calMonth.split('-').map(Number);
-  const first = new Date(year, month - 1, 1);
-  const last = new Date(year, month, 0);
-  const startWeek = (first.getDay() + 6) % 7; // start Monday
-  const daysInMonth = last.getDate();
-  const prevDays = new Date(year, month - 1, 0).getDate();
-
-  document.getElementById('calMonth').textContent = first.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
-
-  const heads = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
-  let html = heads.map(h => `<div class="cal-head">${h}</div>`).join('');
-  const today = new Date(); today.setHours(0,0,0,0);
-
-  // Expand events for the visible month window. Recurring events that started
-  // before the month but extend into it (or beyond) get expanded here too.
-  const monthStartIso = `${year}-${String(month).padStart(2,'0')}-01`;
-  const monthEndIso = `${year}-${String(month).padStart(2,'0')}-${String(daysInMonth).padStart(2,'0')}`;
-  const expandedMonth = expandEventsForWindow(state.events, monthStartIso, monthEndIso);
-
-  // Prev month tail
-  for (let i = startWeek - 1; i >= 0; i--) {
-    const d = prevDays - i;
-    html += `<div class="cal-cell muted"><div class="cal-day">${d}</div></div>`;
-  }
-  // Current month
-  for (let day = 1; day <= daysInMonth; day++) {
-    const date = new Date(year, month - 1, day);
-    const iso = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-    const isToday = date.getTime() === today.getTime();
-    // Visibility filter: hide private events owned by other users from the month grid.
-    const events = filterVisibleEvents(expandedMonth).filter(e => e.date === iso);
-    const conflicts = detectEventConflicts(events);
-    const visibleEvents = events.filter(_entityMatchesTagFilter);
-    const isOverloaded = visibleEvents.length > OVERLOAD_THRESHOLD;
-    const overloadBadge = isOverloaded
-      ? `<span class="cal-cell-overload-flag" title="Journée chargée — ${visibleEvents.length} évènements">⚠ ${visibleEvents.length}</span>`
-      : '';
-    html += `
-      <div class="cal-cell ${isToday ? 'today' : ''}${isOverloaded ? ' overload' : ''}" data-date="${iso}">
-        <div class="cal-day">${day}</div>
-        ${overloadBadge}
-        ${visibleEvents
-          .sort((a,b) => (a.time||'99:99').localeCompare(b.time||'99:99'))
-          .map(e => {
-          const conflictWith = conflicts.get(e.id);
-          const baseTip = _eventTooltip(e);
-          const conflictTip = _conflictTooltip(conflictWith);
-          const spanTip = (e._spanTotal && e._spanTotal > 1)
-            ? `Jour ${e._spanIndex + 1} / ${e._spanTotal}`
-            : '';
-          const tip = [baseTip, conflictTip, spanTip].filter(Boolean).join(' — ');
-          const conflictCls = conflictWith ? ' conflict' : '';
-          const recurringCls = e._isRecurring ? ' is-recurring' : '';
-          const spanCls = e._spanTotal && e._spanTotal > 1
-            ? (e._spanIndex === 0
-                ? ' is-span-start'
-                : (e._spanIndex === e._spanTotal - 1 ? ' is-span-end' : ' is-span-mid'))
-            : '';
-          // Mid/end span days: drop the time prefix — the time belongs to the start day.
-          const isContinuation = spanCls && !spanCls.includes('start');
-          const avatar = e.createdBy ? _eventActorAvatarHTML(e.createdBy) : '';
-          // Show duration suffix only when it's not the default 1h — keeps month pills tight.
-          const dur = parseInt(e.duration, 10);
-          const durSuffix = (e.time && dur && dur !== 60 && !isContinuation) ? ` <span class="cal-event-dur">(${_formatDuration(dur)})</span>` : '';
-          const tagHtml = (Array.isArray(e.tags) && e.tags.length) ? ' ' + tagChipsHTML(e.tags, { limit: 1 }) : '';
-          const timeHtml = (e.time && !isContinuation) ? `<strong>${formatEventTime(e.time)}</strong>${durSuffix} ` : '';
-          const titlePrefix = isContinuation ? '▸ ' : '';
-          return `<div class="cal-event${conflictCls}${recurringCls}${spanCls}" data-type="${escapeHtml(e.type)}" data-visibility="${e.visibility === 'private' ? 'private' : 'team'}" data-event-id="${escapeHtml(e.id)}"${tip ? ` title="${escapeHtml(tip)}"` : ''}>${avatar}${timeHtml}${titlePrefix}${escapeHtml(e.title)}${tagHtml}</div>`;
-        }).join('')}
-      </div>
-    `;
-  }
-  // Fill end
-  const filled = startWeek + daysInMonth;
-  const tail = (7 - (filled % 7)) % 7;
-  for (let i = 1; i <= tail; i++) {
-    html += `<div class="cal-cell muted"><div class="cal-day">${i}</div></div>`;
-  }
-  grid.innerHTML = html;
-  attachCalendarInteractions();
-  if (typeof upgradeEventAvatars === 'function') upgradeEventAvatars().catch(() => {});
-  if (typeof renderTagsBar === 'function') renderTagsBar();
-}
+// renderMonthView — EXTRACTED in Phase TS-13C to /src/render/calendar/grid.ts
+// + /src/render/calendar/month.ts. Same flow as before through the typed
+// render pipeline.
 
 /* CALENDAR INTERACTIONS — drag&drop events between days + click-to-open.
    Uses Pointer Events so the same code path covers mouse, trackpad, and touch.

@@ -2491,6 +2491,268 @@ const _sc48Last = _sc48Results[_sc48Results.length - 1];
 eq('SC48.f 10 concurrent patches: last counter wins', _sc48Last.counter, 10);
 eq('SC48.g 10 concurrent patches: all events accumulated', _sc48Last.events.length, 10);
 
+// ===========================================================================
+// TS-13C — CALENDAR RENDER SCENARIOS (SC49..SC53)
+// ===========================================================================
+// Bundle the calendar render module via esbuild. The bundled exports
+// include pure calculators + the composers + the ghost utilities.
+const calBundle = esbuild.buildSync({
+  entryPoints: [path.join(__dirname, '..', '..', 'src', 'render', 'calendar', 'index.ts')],
+  bundle: true, format: 'cjs', platform: 'node', target: 'es2020',
+  write: false, logLevel: 'silent',
+});
+const _calMod = { exports: {} };
+(function (module, exports, require) { eval(calBundle.outputFiles[0].text); })(_calMod, _calMod.exports, require);
+const _cal = _calMod.exports;
+
+// Minimal deps stub for chip composers — none of SC49-53 actually inspects
+// chip HTML content, only counts + structure. We still pass a complete
+// deps object so the composers don't crash on missing methods.
+const _calDepsStub = {
+  eventTooltip: () => '',
+  tagChipsHTML: () => '',
+  entityMatchesTagFilter: () => true,
+  filterVisibleEvents: (evs) => evs,
+  eventActorAvatarHTML: () => '',
+};
+
+// ===========================================================================
+// SCENARIO 49 — Overlap stability (TS-13C)
+// ===========================================================================
+// 50 events with overlapping time windows → lane assignment must be
+// deterministic + every lane is internally non-overlapping.
+// ===========================================================================
+console.log('\n=== SCENARIO 49 — overlap stability (TS-13C) ===');
+
+function _makeSC49Events(n) {
+  // Build events that overlap aggressively: each event starts a few
+  // minutes after the previous and lasts an hour. Result: a dense block
+  // of overlapping pills on the same day.
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const h = 8 + Math.floor(i / 4);          // hours 8..21
+    const m = (i % 4) * 15;                    // 0, 15, 30, 45
+    const hh = String(h).padStart(2, '0');
+    const mm = String(m).padStart(2, '0');
+    out.push({
+      id: 'e' + String(i).padStart(3, '0'),
+      title: 'E' + i,
+      date: '2026-05-20',
+      time: hh + ':' + mm,
+      duration: 60,
+    });
+  }
+  return out;
+}
+
+const _sc49Events = _makeSC49Events(50);
+
+// First run — capture the lane assignment.
+const _sc49Lanes1 = _cal.assignLanes(_sc49Events);
+// Second run — must be IDENTICAL (SC49 is the determinism contract).
+const _sc49Lanes2 = _cal.assignLanes(_sc49Events);
+
+// Convert to comparable plain object (Map → sorted entries array).
+function _laneSig(lanes) {
+  return Array.from(lanes.entries()).sort((a, b) => a[0] < b[0] ? -1 : 1);
+}
+
+eq('SC49.a lane assignment is deterministic across calls', _laneSig(_sc49Lanes1), _laneSig(_sc49Lanes2));
+
+// Per-lane invariant: events sharing a lane must NOT overlap.
+const _sc49ByLane = new Map();
+for (const e of _sc49Events) {
+  const lane = _sc49Lanes1.get(e.id);
+  if (!_sc49ByLane.has(lane)) _sc49ByLane.set(lane, []);
+  _sc49ByLane.get(lane).push(e);
+}
+let _sc49AnyOverlap = false;
+for (const evs of _sc49ByLane.values()) {
+  for (let i = 0; i < evs.length; i++) {
+    for (let j = i + 1; j < evs.length; j++) {
+      if (_cal.eventsOverlap(evs[i], evs[j])) { _sc49AnyOverlap = true; break; }
+    }
+    if (_sc49AnyOverlap) break;
+  }
+  if (_sc49AnyOverlap) break;
+}
+tr('SC49.b no two events in the same lane overlap', !_sc49AnyOverlap);
+
+// Lane count grows with overlap density but stays bounded.
+const _sc49LaneCount = _cal.laneCount(_sc49Lanes1);
+tr('SC49.c lane count > 0 (at least one lane allocated)', _sc49LaneCount > 0);
+tr('SC49.d lane count ≤ event count (no empty allocations)', _sc49LaneCount <= 50);
+
+// 50 events should compress into around 4 lanes (4-events-per-hour pattern).
+tr('SC49.e lane count compresses overlapping events (~4 lanes for the pattern)', _sc49LaneCount <= 8);
+
+// ===========================================================================
+// SCENARIO 50 — Drag preview cleanup (TS-13C)
+// ===========================================================================
+// Create a ghost, then sweep. The DOM must contain zero ghost elements
+// AND no .cal-event-dragging / .cal-cell-droptarget flags remain.
+// ===========================================================================
+console.log('\n=== SCENARIO 50 — drag preview cleanup (TS-13C) ===');
+
+// Extend the mock document just enough to support the sweep contract.
+// We need: querySelectorAll('.cal-event-ghost' | '.cal-event-dragging' |
+// '.cal-cell-droptarget') AND a body.appendChild + remove flow.
+const _sc50Ghosts = [];
+const _sc50DraggingPills = [{ classList: { remove: () => { _sc50DraggingFlag = false; } } }];
+const _sc50DropTargets = [{ classList: { remove: () => { _sc50DropTargetFlag = false; } } }];
+let _sc50DraggingFlag = true;
+let _sc50DropTargetFlag = true;
+
+// Swap document.querySelectorAll for SC50 only.
+const _origQsa = document.querySelectorAll;
+document.querySelectorAll = function (sel) {
+  if (sel === '.cal-event-ghost') return _sc50Ghosts.slice();
+  if (sel === '.cal-event-dragging') return _sc50DraggingPills.slice();
+  if (sel === '.cal-cell-droptarget') return _sc50DropTargets.slice();
+  return [];
+};
+
+// Seed 3 ghost elements with a remove() method.
+for (let i = 0; i < 3; i++) {
+  _sc50Ghosts.push({ remove: () => { _sc50Ghosts.splice(_sc50Ghosts.indexOf(this), 1); } });
+}
+// Capture pre-sweep count.
+const _sc50Before = _sc50Ghosts.length;
+
+// Sweep — overwrite the splice with a clearing one for clean assertion.
+_sc50Ghosts.forEach((g) => { g.remove = () => { /* observed by sweep, no-op DOM */ }; });
+// Reset to a fresh ghosts list whose .remove() empties the list.
+let _sc50Cleared = false;
+const _sc50LiveGhosts = [
+  { remove: function () { _sc50Cleared = true; } },
+];
+document.querySelectorAll = function (sel) {
+  if (sel === '.cal-event-ghost') return _sc50LiveGhosts;
+  if (sel === '.cal-event-dragging') return _sc50DraggingPills;
+  if (sel === '.cal-cell-droptarget') return _sc50DropTargets;
+  return [];
+};
+
+_cal.sweepDragGhosts();
+tr('SC50.a ghost remove() called during sweep', _sc50Cleared === true);
+tr('SC50.b cal-event-dragging class cleared', _sc50DraggingFlag === false);
+tr('SC50.c cal-cell-droptarget class cleared', _sc50DropTargetFlag === false);
+
+// Restore the original querySelectorAll for subsequent scenarios.
+document.querySelectorAll = _origQsa;
+
+eq('SC50.d pre-sweep ghost count was correct (sanity)', _sc50Before, 3);
+
+// ===========================================================================
+// SCENARIO 51 — Repeated rerender idempotence (TS-13C)
+// ===========================================================================
+// Build 100 week views with identical inputs — the HTML output must be
+// byte-identical every time. (Same property for month view.)
+// ===========================================================================
+console.log('\n=== SCENARIO 51 — repeated rerender idempotence (TS-13C) ===');
+
+const _sc51Events = [
+  { id: 'a', title: 'Alpha', date: '2026-05-18', time: '09:00', duration: 60 },
+  { id: 'b', title: 'Beta',  date: '2026-05-19', time: '14:30', duration: 90 },
+  { id: 'c', title: 'Gamma', date: '2026-05-20', duration: 60 }, // all-day
+];
+const _sc51WeekOpts = { startHour: 7, endHour: 23, hourHeight: 56, todayIso: '2026-05-18' };
+
+const _sc51Week1 = _cal.buildWeekView('2026-05-18', _sc51Events, _calDepsStub, _sc51WeekOpts);
+let _sc51AllSame = true;
+let _sc51FirstHash = _sc51Week1.html.length;
+for (let i = 0; i < 100; i++) {
+  const r = _cal.buildWeekView('2026-05-18', _sc51Events, _calDepsStub, _sc51WeekOpts);
+  if (r.html !== _sc51Week1.html) { _sc51AllSame = false; break; }
+  if (r.html.length !== _sc51FirstHash) { _sc51AllSame = false; break; }
+}
+tr('SC51.a 100 week renders → byte-identical HTML', _sc51AllSame);
+
+// Same property for month view.
+const _sc51Month1 = _cal.buildMonthView('2026-05', _sc51Events, _calDepsStub, { todayIso: '2026-05-18' });
+let _sc51MonthSame = true;
+for (let i = 0; i < 100; i++) {
+  const r = _cal.buildMonthView('2026-05', _sc51Events, _calDepsStub, { todayIso: '2026-05-18' });
+  if (r.html !== _sc51Month1.html) { _sc51MonthSame = false; break; }
+}
+tr('SC51.b 100 month renders → byte-identical HTML', _sc51MonthSame);
+
+// Node count proxy: count '<div' substrings. Must be stable.
+const _sc51NodeCount = (_sc51Week1.html.match(/<div/g) || []).length;
+const _sc51NodeCount2 = (_cal.buildWeekView('2026-05-18', _sc51Events, _calDepsStub, _sc51WeekOpts).html.match(/<div/g) || []).length;
+eq('SC51.c node count stable across rerenders', _sc51NodeCount, _sc51NodeCount2);
+
+// ===========================================================================
+// SCENARIO 52 — Event ordering determinism (TS-13C)
+// ===========================================================================
+// Same input set in DIFFERENT orders → same final HTML. The renderers
+// must sort their inputs internally.
+// ===========================================================================
+console.log('\n=== SCENARIO 52 — event ordering determinism (TS-13C) ===');
+
+const _sc52Forward = [
+  { id: 'a', title: 'A', date: '2026-05-18', time: '09:00', duration: 60 },
+  { id: 'b', title: 'B', date: '2026-05-18', time: '10:00', duration: 60 },
+  { id: 'c', title: 'C', date: '2026-05-18', time: '11:00', duration: 60 },
+];
+const _sc52Reversed = _sc52Forward.slice().reverse();
+const _sc52Shuffled = [_sc52Forward[2], _sc52Forward[0], _sc52Forward[1]];
+
+const _sc52MonthOpts = { todayIso: '2026-05-18' };
+const _sc52F = _cal.buildMonthView('2026-05', _sc52Forward, _calDepsStub, _sc52MonthOpts).html;
+const _sc52R = _cal.buildMonthView('2026-05', _sc52Reversed, _calDepsStub, _sc52MonthOpts).html;
+const _sc52S = _cal.buildMonthView('2026-05', _sc52Shuffled, _calDepsStub, _sc52MonthOpts).html;
+tr('SC52.a month: reversed input → identical HTML (sort by time)', _sc52F === _sc52R);
+tr('SC52.b month: shuffled input → identical HTML', _sc52F === _sc52S);
+
+// Lane assignment also deterministic on permutations (already in SC49,
+// reinforced here with a permuted input).
+const _sc52LanesF = _cal.assignLanes(_sc52Forward);
+const _sc52LanesR = _cal.assignLanes(_sc52Reversed);
+eq('SC52.c lanes: same assignment regardless of input order', _laneSig(_sc52LanesF), _laneSig(_sc52LanesR));
+
+// ===========================================================================
+// SCENARIO 53 — Resize interruption rollback (TS-13C)
+// ===========================================================================
+// The resize flow lives in inline handlers (still protected by SC1-9 +
+// SC25-32). TS-13C verifies the calculations layer's contract: an event
+// whose duration is mid-mutation must not corrupt the conflict detection
+// or the expansion functions. We simulate by mutating an event mid-stream.
+// ===========================================================================
+console.log('\n=== SCENARIO 53 — resize interruption rollback (TS-13C) ===');
+
+const _sc53Original = { id: 'r1', title: 'Resize me', date: '2026-05-18', time: '10:00', duration: 60 };
+const _sc53Other = { id: 'r2', title: 'Other', date: '2026-05-18', time: '10:30', duration: 30 };
+const _sc53Events = [_sc53Original, _sc53Other];
+
+// Pre-resize: r1 (10:00-11:00) overlaps r2 (10:30-11:00).
+const _sc53PreConflicts = _cal.detectEventConflicts(_sc53Events);
+tr('SC53.a pre-resize: conflict detected', _sc53PreConflicts.size === 2);
+
+// Simulate aborted resize: original event's duration was about to become
+// 30 but the user cancelled. State should NOT have been mutated by the
+// calculations layer.
+tr('SC53.b original event duration not mutated by detectEventConflicts', _sc53Original.duration === 60);
+tr('SC53.c original event time not mutated', _sc53Original.time === '10:00');
+
+// expandEventsForWindow does NOT mutate its inputs either.
+const _sc53BeforeKeys = JSON.stringify(_sc53Events);
+_cal.expandEventsForWindow(_sc53Events, '2026-05-18', '2026-05-18');
+tr('SC53.d expandEventsForWindow does not mutate input', JSON.stringify(_sc53Events) === _sc53BeforeKeys);
+
+// If we DID resize to 30 (cancelled later → rollback to 60), the conflicts
+// should reflect the CURRENT state. Mutate, recompute, restore, recompute.
+_sc53Original.duration = 30;
+// 10:00-10:30 and 10:30-11:00 are back-to-back, NOT overlapping.
+const _sc53MidConflicts = _cal.detectEventConflicts(_sc53Events);
+tr('SC53.e mid-resize: conflict resolves correctly (no overlap)', _sc53MidConflicts.size === 0);
+
+// Rollback simulation
+_sc53Original.duration = 60;
+const _sc53AfterConflicts = _cal.detectEventConflicts(_sc53Events);
+tr('SC53.f after rollback: conflict re-appears', _sc53AfterConflicts.size === 2);
+tr('SC53.g state recovered: duration === 60', _sc53Original.duration === 60);
+
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------
