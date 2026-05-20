@@ -428,30 +428,40 @@ type AudioWindow = {
 (window as unknown as AudioWindow)._setAudioState = audioSetAudioState;
 (window as unknown as AudioWindow)._hookAudioToStore = audioHookAudioToStore;
 
-// Bridge to the inline boot snapshot. Inline declares `_audioStateInline`
-// (plain object) and `_syncAllPillsInline` (the reconciler) BEFORE this
-// module runs. We mirror every store update into the inline object so the
-// legacy readers (`_trackAudioPillHTML`, etc.) keep working unchanged, and
-// register the inline reconciler as a real subscriber.
-type AudioBridgeWindow = {
-  _audioStateInline?: { trackId: string | null; isPlaying: boolean; currentTime: number; duration: number; loading: boolean };
-  _syncAllPillsInline?: (s: ReturnType<typeof audioGetAudioState>) => void;
+// TS-20 — Audio pill widget. The PURE HTML builders + the DOM reconciler
+// (`syncAllPills`) now live in /src/features/audio/pill/. The inline boot
+// snapshot bridge (`_audioStateInline` / `_syncAllPillsInline`) is gone —
+// the pill module reads the store directly via subscribeAudio, and
+// `trackAudioInitialHTML` is exposed on window for the few remaining inline
+// catalogue render paths.
+import {
+  buildTrackAudioInitialHTML as pillBuildInitialHTML,
+  buildTrackAudioPillHTML as pillBuildPillHTML,
+  syncAllPills as pillSyncAllPills,
+  formatAudioTime as pillFormatAudioTime,
+  PLAY_ICON_SVG as PILL_PLAY_ICON_SVG,
+  PAUSE_ICON_SVG as PILL_PAUSE_ICON_SVG,
+} from './features/audio/pill';
+// Subscribe the TS-side reconciler to the store. Fires once synchronously
+// with the current state, then on every change.
+audioSubscribeAudio((s) => pillSyncAllPills(s));
+// Re-attach pill builders on window for the inline trackAudioInitialHTML
+// + _trackAudioPillHTML call sites (catalogue audio slot + detail). The
+// builders read the live store, so HTML rendered at any time is correct.
+type PillWindow = {
+  trackAudioInitialHTML?: (t: { id: string; audio?: string | null; idbAudio?: boolean }) => string;
+  _trackAudioPillHTML?: (t: { id: string }, durationLabel?: string) => string;
+  _formatAudioTime?: typeof pillFormatAudioTime;
+  PLAY_ICON_SVG?: string;
+  PAUSE_ICON_SVG?: string;
 };
 {
-  const bw = window as unknown as AudioBridgeWindow;
-  if (bw._audioStateInline) {
-    audioSubscribeAudio((s) => {
-      const dest = bw._audioStateInline!;
-      dest.trackId = s.trackId;
-      dest.isPlaying = s.isPlaying;
-      dest.currentTime = s.currentTime;
-      dest.duration = s.duration;
-      dest.loading = s.loading;
-    });
-  }
-  if (typeof bw._syncAllPillsInline === 'function') {
-    audioSubscribeAudio(bw._syncAllPillsInline);
-  }
+  const pw = window as unknown as PillWindow;
+  pw.trackAudioInitialHTML = (t) => pillBuildInitialHTML(t, audioGetAudioState());
+  pw._trackAudioPillHTML = (t, durationLabel) => pillBuildPillHTML(t, audioGetAudioState(), durationLabel);
+  pw._formatAudioTime = pillFormatAudioTime;
+  pw.PLAY_ICON_SVG = PILL_PLAY_ICON_SVG;
+  pw.PAUSE_ICON_SVG = PILL_PAUSE_ICON_SVG;
 }
 
 // TS-18 — audio + cover IDB cache layer.
@@ -1214,15 +1224,14 @@ registerSectionRenderer(TODOS_SECTION, () => {
   renderTodosView(_buildTodoDeps());
 });
 // TS-15 — catalogue via TS render pipeline.
+// TS-20 — `trackAudioInitialHTML` is now a direct TS import (no window hop).
 function _buildCatalogueDeps(): _CatalogueDeps {
-  type Legacy = { trackAudioInitialHTML?: (t: CatalogueTrack) => string };
-  const w = window as unknown as Legacy;
   return {
     escapeHtml: (s: string | null | undefined) => escapeHtml(s),
     formatDate: (s: string | undefined) => formatDate(s),
     statusLabel: (s: string | undefined) => statusLabel(s),
     trackAudioInitialHTML: (t: CatalogueTrack) =>
-      typeof w.trackAudioInitialHTML === 'function' ? w.trackAudioInitialHTML(t) : '',
+      pillBuildInitialHTML(t, audioGetAudioState()),
   };
 }
 registerCatalogueSideEffects({

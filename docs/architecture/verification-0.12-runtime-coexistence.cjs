@@ -4213,6 +4213,148 @@ await (async () => {
   tr('SC106.d module-side listener count still 2', _playerR._getListenerCount() === 2);
 })();
 
+// ===========================================================================
+// TS-20 — CATALOGUE AUDIO PILL SCENARIOS (SC107..SC110)
+// ===========================================================================
+//
+// The pill module is fully synchronous (no IDB, no audio element). We just
+// drive the PURE HTML builders + verify the DOM reconciler patches the
+// right nodes.
+// ---------------------------------------------------------------------------
+const _pillR = _bundleFeatureDir('audio/pill');
+
+// ===========================================================================
+// SCENARIO 107 — formatAudioTime PURE (TS-20)
+// ===========================================================================
+console.log('\n=== SCENARIO 107 — formatAudioTime PURE (TS-20) ===');
+eq('SC107.a 0 → 0:00', _pillR.formatAudioTime(0), '0:00');
+eq('SC107.b negative → 0:00', _pillR.formatAudioTime(-10), '0:00');
+eq('SC107.c NaN → 0:00', _pillR.formatAudioTime(NaN), '0:00');
+eq('SC107.d Infinity → 0:00', _pillR.formatAudioTime(Infinity), '0:00');
+eq('SC107.e null → 0:00', _pillR.formatAudioTime(null), '0:00');
+eq('SC107.f 5 → 0:05', _pillR.formatAudioTime(5), '0:05');
+eq('SC107.g 60 → 1:00', _pillR.formatAudioTime(60), '1:00');
+eq('SC107.h 125 → 2:05', _pillR.formatAudioTime(125), '2:05');
+eq('SC107.i 3725 → 62:05', _pillR.formatAudioTime(3725), '62:05'); // no hour rollover, matches legacy
+eq('SC107.j 59.9 → 0:59 (floor)', _pillR.formatAudioTime(59.9), '0:59');
+
+// ===========================================================================
+// SCENARIO 108 — buildTrackAudioPillHTML reflects state (TS-20)
+// ===========================================================================
+console.log('\n=== SCENARIO 108 — pill HTML reflects state (TS-20) ===');
+const _sc108Inactive = _pillR.buildTrackAudioPillHTML(
+  { id: 't1' },
+  { trackId: null, isPlaying: false, currentTime: 0, duration: 0 },
+);
+tr('SC108.a inactive pill carries no data-state attr', !/data-state="playing"/.test(_sc108Inactive));
+tr('SC108.b inactive pill embeds the play icon', _sc108Inactive.includes('M8 5v14l11-7z'));
+tr('SC108.c inactive pill width is 0.00%', _sc108Inactive.includes('width:0.00%'));
+const _sc108Active = _pillR.buildTrackAudioPillHTML(
+  { id: 't1' },
+  { trackId: 't1', isPlaying: true, currentTime: 30, duration: 120 },
+);
+tr('SC108.d active+playing pill carries data-state="playing"', /data-state="playing"/.test(_sc108Active));
+tr('SC108.e active+playing pill embeds the pause icon', _sc108Active.includes('M6 5h4v14H6zm8 0h4v14h-4z'));
+tr('SC108.f active+playing pill width is 25.00%', _sc108Active.includes('width:25.00%'));
+tr('SC108.g active pill time label uses formatted duration', _sc108Active.includes('2:00'));
+// Same id but not playing → still uses formatted duration in time label.
+const _sc108Paused = _pillR.buildTrackAudioPillHTML(
+  { id: 't1' },
+  { trackId: 't1', isPlaying: false, currentTime: 0, duration: 120 },
+);
+tr('SC108.h active+paused pill has NO data-state', !/data-state="playing"/.test(_sc108Paused));
+tr('SC108.i active+paused pill embeds the play icon', _sc108Paused.includes('M8 5v14l11-7z'));
+// Onclick goes through the legacy bare-global name (resolves via shim).
+tr('SC108.j pill HTML wires onclick to playTrackInMini', _sc108Active.includes("playTrackInMini('t1')"));
+// XSS guard — escape ids that contain quotes.
+const _sc108XSS = _pillR.buildTrackAudioPillHTML(
+  { id: "x'\"<y" },
+  { trackId: null, isPlaying: false, currentTime: 0, duration: 0 },
+);
+tr('SC108.k pill HTML escapes id in data-track-id attr', _sc108XSS.includes('data-track-id="x') && !_sc108XSS.includes('data-track-id="x\'"'));
+
+// ===========================================================================
+// SCENARIO 109 — buildTrackAudioInitialHTML picks pill vs upload (TS-20)
+// ===========================================================================
+console.log('\n=== SCENARIO 109 — initial HTML branches (TS-20) ===');
+const _sc109Empty = _pillR.buildTrackAudioInitialHTML(
+  { id: 'a' },
+  { trackId: null, isPlaying: false, currentTime: 0, duration: 0 },
+);
+tr('SC109.a empty track → upload label', _sc109Empty.includes('track-audio-empty') && _sc109Empty.includes('Charger'));
+tr('SC109.b empty track has NO pill', !_sc109Empty.includes('class="track-audio"'));
+const _sc109WithIdb = _pillR.buildTrackAudioInitialHTML(
+  { id: 'b', idbAudio: true },
+  { trackId: null, isPlaying: false, currentTime: 0, duration: 0 },
+);
+tr('SC109.c idbAudio track → pill + meta slot', _sc109WithIdb.includes('class="track-audio"') && _sc109WithIdb.includes('data-meta-for="b"'));
+const _sc109WithDataUrl = _pillR.buildTrackAudioInitialHTML(
+  { id: 'c', audio: 'data:audio/mp3;base64,xxxx' },
+  { trackId: null, isPlaying: false, currentTime: 0, duration: 0 },
+);
+tr('SC109.d data:URL audio → pill + meta slot', _sc109WithDataUrl.includes('class="track-audio"') && _sc109WithDataUrl.includes('data-meta-for="c"'));
+// Non-data audio (e.g. http URL stored on legacy rows) → still empty (we don't render the pill).
+const _sc109NonData = _pillR.buildTrackAudioInitialHTML(
+  { id: 'd', audio: 'https://example.com/a.mp3' },
+  { trackId: null, isPlaying: false, currentTime: 0, duration: 0 },
+);
+tr('SC109.e http URL audio (no idbAudio) → upload label', _sc109NonData.includes('track-audio-empty'));
+
+// ===========================================================================
+// SCENARIO 110 — syncAllPills patches DOM correctly (TS-20)
+// ===========================================================================
+console.log('\n=== SCENARIO 110 — syncAllPills DOM reconciliation (TS-20) ===');
+// Build a fake DOM: 3 pills, t1 active+playing.
+function _makeFakePill(id) {
+  const btn = {
+    innerHTML: '',
+    dataset: {},
+    // _iconKey: undefined
+  };
+  const fill = { style: { width: '' } };
+  const pill = {
+    dataset: { trackId: id },
+    querySelector(sel) {
+      if (sel === '.track-audio-play') return btn;
+      if (sel === '.track-audio-progress-fill') return fill;
+      return null;
+    },
+    _btn: btn,
+    _fill: fill,
+  };
+  return pill;
+}
+const _sc110Pills = [_makeFakePill('t1'), _makeFakePill('t2'), _makeFakePill('t3')];
+// Mock document.querySelectorAll to return our pills (the harness's existing
+// document mock doesn't track .track-audio nodes).
+const _originalQSA = global.document.querySelectorAll;
+global.document.querySelectorAll = (sel) => {
+  if (sel === '.track-audio[data-track-id]') {
+    return Object.assign(_sc110Pills.slice(), { forEach: Array.prototype.forEach });
+  }
+  return _originalQSA ? _originalQSA(sel) : [];
+};
+_pillR.syncAllPills({ trackId: 't1', isPlaying: true, currentTime: 50, duration: 200 });
+tr('SC110.a t1 button gets pause icon + data-state=playing',
+  _sc110Pills[0]._btn.innerHTML.includes('M6 5h4v14H6') && _sc110Pills[0]._btn.dataset.state === 'playing');
+tr('SC110.b t1 progress fill is 25.00%', _sc110Pills[0]._fill.style.width === '25.00%');
+tr('SC110.c t2 button gets play icon + no data-state', _sc110Pills[1]._btn.innerHTML.includes('M8 5v14l11-7z') && (_sc110Pills[1]._btn.dataset.state === '' || !_sc110Pills[1]._btn.dataset.state));
+tr('SC110.d t3 progress fill is 0.00%', _sc110Pills[2]._fill.style.width === '0.00%');
+// Idempotence: re-running with same state must not write the DOM again.
+const t1HtmlBefore = _sc110Pills[0]._btn.innerHTML;
+_sc110Pills[0]._btn.innerHTML = '__SENTINEL__'; // would be overwritten if dirty-check fails
+_sc110Pills[0]._btn._iconKey = 'pause'; // restore the iconKey to match what was set above
+_pillR.syncAllPills({ trackId: 't1', isPlaying: true, currentTime: 50, duration: 200 });
+tr('SC110.e re-sync with same state → button NOT rewritten (dirty-check)', _sc110Pills[0]._btn.innerHTML === '__SENTINEL__');
+// State change: t1 → paused → button reverts to play icon.
+_sc110Pills[0]._btn.innerHTML = ''; // clear sentinel
+_pillR.syncAllPills({ trackId: 't1', isPlaying: false, currentTime: 0, duration: 0 });
+tr('SC110.f t1 reverts to play icon after pause', _sc110Pills[0]._btn.innerHTML.includes('M8 5v14l11-7z'));
+tr('SC110.g all fills go back to 0.00%', _sc110Pills[0]._fill.style.width === '0.00%' && _sc110Pills[1]._fill.style.width === '0.00%' && _sc110Pills[2]._fill.style.width === '0.00%');
+// Restore querySelectorAll for any subsequent tests.
+global.document.querySelectorAll = _originalQSA;
+void t1HtmlBefore; // unused but intentional
+
 // ---------------------------------------------------------------------------
 // SUMMARY — runs AFTER the TS-18/TS-19 await blocks complete.
 // ---------------------------------------------------------------------------

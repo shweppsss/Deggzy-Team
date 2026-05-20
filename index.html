@@ -11252,110 +11252,38 @@ async function hydrateAllCovers() {
 // Playback is delegated to MiniPlayer (Apple-Music floating pill), which
 // fixes the "audio doesn't play" bug from the inline <audio controls> and
 // gives a single, uniform playback surface across the app.
-const PLAY_ICON_SVG  = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
-const PAUSE_ICON_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>';
-
 /* ============================
-   AUDIO STORE — single source of truth for playback state
-   ============================
-   Every pill in the app (catalogue card, detail view, mini-player) renders
-   from this store and subscribes to its changes via _syncAllPills. The
-   MiniPlayer's <audio> element is the only real playback surface; its DOM
-   events patch the store, and the subscriber reconciles every pill in the
-   DOM on every state change.
-
-   This replaces the previous _activePillTrackId / _bindPillProgress pattern
-   which queried the DOM at event time — broken across re-renders because
-   pill nodes that didn't exist at the time of the play call never received
-   updates. The store-driven approach survives renderCatalogue, openDetail,
-   route changes, and realtime sync: any new pill DOM node that lands in
-   the document picks up the current state on the next reconcile pass. */
-// Audio state store — EXTRACTED in Phase TS-17 to /src/features/audio/state.ts.
-// `getAudioState`, `subscribeAudio`, `_setAudioState`, `_hookAudioToStore` are
-// now TS exports re-attached on window by main.ts. The MiniPlayer module
-// imports them directly (no window hop).
-//
-// BOOT ORDER NUANCE — this inline <script> parses BEFORE the deferred
-// /src/main.ts module. So we declare a plain `_audioState` object here for
-// local readers (_trackAudioPillHTML, _syncAllPills) and main.ts mirrors
-// store updates back into it via a subscriber. Inline `_audioState.X`
-// reads keep working unchanged; the actual mutations happen in the TS module.
-const _audioState = { trackId: null, isPlaying: false, currentTime: 0, duration: 0, loading: false };
-window._audioStateInline = _audioState; // mirrored by main.ts
-
-// Reconciles every pill in the DOM with the current audio state. Only one
-// pill (the one whose data-track-id matches state.trackId AND state.isPlaying)
-// is visually "playing"; everyone else displays the play icon and 0% fill.
-// Diff-aware writes — we only touch the DOM when the value actually changes,
-// which keeps the per-frame timeupdate path cheap.
-function _syncAllPills(state) {
-  const pills = document.querySelectorAll('.track-audio[data-track-id]');
-  pills.forEach(pill => {
-    const id = pill.dataset.trackId;
-    const isActive = id === state.trackId;
-    const isPlayingHere = isActive && state.isPlaying;
-    const btn = pill.querySelector('.track-audio-play');
-    if (btn) {
-      const wantIcon = isPlayingHere ? PAUSE_ICON_SVG : PLAY_ICON_SVG;
-      if (btn._iconKey !== (isPlayingHere ? 'pause' : 'play')) {
-        btn.innerHTML = wantIcon;
-        btn._iconKey = isPlayingHere ? 'pause' : 'play';
-      }
-      const wantState = isPlayingHere ? 'playing' : '';
-      if (btn.dataset.state !== wantState) btn.dataset.state = wantState;
-    }
-    const fill = pill.querySelector('.track-audio-progress-fill');
-    if (fill) {
-      let pct = 0;
-      if (isActive && state.duration > 0) pct = (state.currentTime / state.duration) * 100;
-      const wantWidth = pct.toFixed(2) + '%';
-      if (fill.style.width !== wantWidth) fill.style.width = wantWidth;
-    }
-  });
-}
-// `subscribeAudio` lives in the TS module loaded AFTER this inline block.
-// Expose `_syncAllPills` so main.ts can register the subscription itself.
-window._syncAllPillsInline = _syncAllPills;
-
-// Pill HTML — reads from _audioState so a fresh render lands with the right
-// icon + fill. Subsequent state changes flow through the subscriber above.
+   AUDIO PILL — store-driven, fully TS.
+   EXTRACTED in Phase TS-20 to /src/features/audio/pill/{icons,format,
+   html,sync,types,index}.ts. The audio store (TS-17), cache (TS-18),
+   orchestration (TS-19) and pill widget (TS-20) are now a fully closed
+   domain. The bare-global names below remain as shims so any remaining
+   inline call sites resolve through the global scope chain to the TS
+   builders re-attached by /src/main.ts.
+   ============================ */
+// Inline shims — resolved at call time so the deferred main.ts has time
+// to attach the TS exports on window. All four are deliberately tiny.
+const PLAY_ICON_SVG  = window.PLAY_ICON_SVG  || '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+const PAUSE_ICON_SVG = window.PAUSE_ICON_SVG || '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>';
 function _trackAudioPillHTML(t, durationLabel) {
-  const isActive = _audioState.trackId === t.id;
-  const isPlayingHere = isActive && _audioState.isPlaying;
-  const iconHTML = isPlayingHere ? PAUSE_ICON_SVG : PLAY_ICON_SVG;
-  const stateAttr = isPlayingHere ? ' data-state="playing"' : '';
-  let fillPct = 0;
-  if (isActive && _audioState.duration > 0) fillPct = (_audioState.currentTime / _audioState.duration) * 100;
-  const timeLabel = isActive && _audioState.duration > 0
-    ? _formatAudioTime(_audioState.duration)
-    : (durationLabel || '0:00');
-  return `
-    <div class="track-audio" data-track-id="${escapeHtml(t.id)}">
-      <button class="track-audio-play" type="button" aria-label="Lecture / pause" onclick="playTrackInMini('${escapeHtml(t.id)}')"${stateAttr}>${iconHTML}</button>
-      <div class="track-audio-progress"><div class="track-audio-progress-fill" style="width:${fillPct.toFixed(2)}%"></div></div>
-      <span class="track-audio-time">${timeLabel}</span>
-    </div>
-  `;
-}
-
-function trackAudioInitialHTML(t) {
-  if ((t.audio && typeof t.audio === 'string' && t.audio.startsWith('data:')) || t.idbAudio) {
-    return _trackAudioPillHTML(t) + `<div class="track-audio-meta" data-meta-for="${escapeHtml(t.id)}"></div>`;
+  if (typeof window._trackAudioPillHTML === 'function' && window._trackAudioPillHTML !== _trackAudioPillHTML) {
+    return window._trackAudioPillHTML(t, durationLabel);
   }
-  return `
-    <label class="track-audio-empty">
-      + Charger l'audio (WAV / MP3 / FLAC)
-      <input type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg" onchange="handleTrackAudioUpload('${t.id}', event)" />
-    </label>
-  `;
+  return '';
 }
-
+function trackAudioInitialHTML(t) {
+  if (typeof window.trackAudioInitialHTML === 'function' && window.trackAudioInitialHTML !== trackAudioInitialHTML) {
+    return window.trackAudioInitialHTML(t);
+  }
+  return '';
+}
 function _formatAudioTime(seconds) {
+  if (typeof window._formatAudioTime === 'function' && window._formatAudioTime !== _formatAudioTime) {
+    return window._formatAudioTime(seconds);
+  }
   if (!isFinite(seconds) || seconds <= 0) return '0:00';
   const s = Math.floor(seconds);
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return m + ':' + String(r).padStart(2, '0');
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
 
 // hydrateAllAudios — EXTRACTED in Phase TS-18 to /src/features/audio/cache/hydrate.ts.
