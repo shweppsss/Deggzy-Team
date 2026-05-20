@@ -4802,6 +4802,122 @@ await (async () => {
   // Channel must still have been opened (presence subscribers work even logged out)
   tr('SC128.b channel still created (for receive-only)', !!sc128.channels['activity:degzzy_main']);
   eq('SC128.c no send happened', sc128.channels['activity:degzzy_main']._sent.length, 0);
+
+  // ===========================================================================
+  // MOBILE-1 — HAPTICS + VISIBILITY + AUDIO CONTINUITY (SC129..SC133)
+  // ===========================================================================
+  const _mobileR = _bundleFeatureDir('mobile');
+
+  // Mock navigator.vibrate so we can observe the calls.
+  const _vibrateCalls = [];
+  global.navigator = Object.assign(global.navigator || {}, {
+    vibrate: (p) => { _vibrateCalls.push(p); return true; },
+  });
+  // Mock matchMedia (used by reduced-motion check)
+  global.window = global.window || {};
+  global.window.matchMedia = (q) => ({ matches: false, media: q });
+
+  // SCENARIO 129 — Named haptic patterns
+  console.log('\n=== SCENARIO 129 — named haptic patterns (Mobile-1) ===');
+  _mobileR._resetHaptics();
+  _mobileR.initHaptics();
+  _vibrateCalls.length = 0;
+  _mobileR.haptic('tap');
+  eq('SC129.a tap → vibrate(8)', _vibrateCalls[0], 8);
+  _mobileR.haptic('success');
+  tr('SC129.b success → vibrate([12,40,18])', Array.isArray(_vibrateCalls[1]) && _vibrateCalls[1].length === 3);
+  _mobileR.haptic('error');
+  tr('SC129.c error → 5-element pattern', Array.isArray(_vibrateCalls[2]) && _vibrateCalls[2].length === 5);
+  // setHapticsEnabled(false) suppresses everything
+  _mobileR.setHapticsEnabled(false);
+  _mobileR.haptic('tap');
+  eq('SC129.d disabled → no vibrate call', _vibrateCalls.length, 3);
+  _mobileR.setHapticsEnabled(true);
+  // reduced-motion preference also suppresses
+  _mobileR._forceReducedMotion(true);
+  _mobileR.haptic('tap');
+  eq('SC129.e reduced-motion → no vibrate', _vibrateCalls.length, 3);
+  tr('SC129.f areHapticsEnabled returns false under reduced-motion', _mobileR.areHapticsEnabled() === false);
+
+  // SCENARIO 130 — Visibility tracker
+  console.log('\n=== SCENARIO 130 — visibility tracker (Mobile-1) ===');
+  global.document = global.document || {};
+  global.document.hidden = false;
+  const visListeners = {};
+  global.document.addEventListener = (type, fn) => { visListeners[type] = fn; };
+  global.document.removeEventListener = (type) => { delete visListeners[type]; };
+  _mobileR.teardownVisibility();
+  _mobileR.initVisibility();
+  eq('SC130.a initial state is visible', _mobileR.getVisibilityState(), 'visible');
+  let visTransitions = [];
+  _mobileR.subscribeVisibility((s) => visTransitions.push(s));
+  eq('SC130.b subscribe sync first-fire', visTransitions[0], 'visible');
+  // simulate going to background
+  global.document.hidden = true;
+  visListeners.visibilitychange();
+  eq('SC130.c hidden transition fires', _mobileR.getVisibilityState(), 'hidden');
+  tr('SC130.d subscriber received hidden', visTransitions.includes('hidden'));
+  global.document.hidden = false;
+  visListeners.visibilitychange();
+  eq('SC130.e visible-again transition fires', _mobileR.getVisibilityState(), 'visible');
+
+  // SCENARIO 131 — Audio continuity: background→foreground resume
+  console.log('\n=== SCENARIO 131 — audio continuity resume (Mobile-1) ===');
+  _mobileR._resetAudioContinuity();
+  let resumeCalls = 0;
+  let isPlayingMock = true;
+  _mobileR.registerAudioContinuity({
+    isPlaying: () => isPlayingMock,
+    resume: () => { resumeCalls++; },
+  });
+  // hidden → visible while playing → resume
+  global.document.hidden = true;
+  visListeners.visibilitychange();
+  global.document.hidden = false;
+  visListeners.visibilitychange();
+  eq('SC131.a resume() called once on foreground while playing', resumeCalls, 1);
+  // hidden → visible while NOT playing → no resume
+  isPlayingMock = false;
+  global.document.hidden = true;
+  visListeners.visibilitychange();
+  global.document.hidden = false;
+  visListeners.visibilitychange();
+  eq('SC131.b no resume call when not playing', resumeCalls, 1);
+  // visible → visible (no transition) → no resume
+  visListeners.visibilitychange();
+  eq('SC131.c no spurious resume on identical visibility event', resumeCalls, 1);
+
+  // SCENARIO 132 — View transitions degrade gracefully
+  console.log('\n=== SCENARIO 132 — view transitions degrade (Mobile-1) ===');
+  _mobileR._resetTransitions();
+  // No startViewTransition available → fallback to direct swap
+  global.document.startViewTransition = undefined;
+  let swapCalls = 0;
+  await _mobileR.viewTransition(() => { swapCalls++; });
+  eq('SC132.a swap callback ran exactly once (no API)', swapCalls, 1);
+  // With API available → wrapped, still 1 swap
+  let mockTransitionRan = 0;
+  global.document.startViewTransition = (cb) => { mockTransitionRan++; cb(); return { finished: Promise.resolve() }; };
+  swapCalls = 0;
+  await _mobileR.viewTransition(() => { swapCalls++; });
+  eq('SC132.b swap callback ran once when wrapped', swapCalls, 1);
+  eq('SC132.c startViewTransition was invoked', mockTransitionRan, 1);
+  // setTransitionsEnabled(false) → direct swap
+  _mobileR.setTransitionsEnabled(false);
+  swapCalls = 0; mockTransitionRan = 0;
+  await _mobileR.viewTransition(() => { swapCalls++; });
+  eq('SC132.d disabled → bypass wrapper', mockTransitionRan, 0);
+  eq('SC132.e disabled → swap still runs once', swapCalls, 1);
+
+  // SCENARIO 133 — hapticMs numeric API still works
+  console.log('\n=== SCENARIO 133 — hapticMs legacy numeric API (Mobile-1) ===');
+  _mobileR._resetHaptics();
+  _vibrateCalls.length = 0;
+  _mobileR.hapticMs(25);
+  eq('SC133.a hapticMs(25) → vibrate(25)', _vibrateCalls[0], 25);
+  _mobileR.setHapticsEnabled(false);
+  _mobileR.hapticMs(99);
+  eq('SC133.b disabled → no vibrate', _vibrateCalls.length, 1);
 })();
 
 // ---------------------------------------------------------------------------
