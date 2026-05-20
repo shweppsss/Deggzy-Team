@@ -954,11 +954,89 @@ queueMicrotask(() => {
 // inline cloud-push logic (retry, conflict-reconcile, session refresh)
 // stays inline for TS-13+.
 registerCloudPushHook(() => {
+  // OFFLINE-1: mark every save as a local change. The offline module
+  // tracks dirty vs cloud; when offline, the cloud push below is a no-op
+  // (the inline path catches its own network failures); on reconnect,
+  // the replay module re-fires the push.
+  try { offlineMarkLocalChange(); } catch (_e) { /* never let queue throw */ }
   const w = window as unknown as { pushWorkspaceToCloud?: () => void };
   if (typeof w.pushWorkspaceToCloud === 'function') {
     try { w.pushWorkspaceToCloud(); } catch (_e) { /* swallow — never let cloud push throw */ }
   }
 });
+
+// OFFLINE-1: register the offline-first sub-domain (connectivity + queue
+// + replay). Persistence uses a dedicated localStorage key — independent
+// from the workspace blob so a corrupted workspace doesn't wipe the
+// offline metadata.
+import {
+  registerOffline,
+  markLocalChange as offlineMarkLocalChange,
+  markCloudSynced as offlineMarkCloudSynced,
+  triggerReplay as offlineTriggerReplay,
+  getOfflineSnapshot as offlineGetSnapshot,
+  subscribeConnectivity as offlineSubscribeConnectivity,
+  isOnline as offlineIsOnline,
+  type OfflineSnapshot,
+} from './features/offline';
+
+const OFFLINE_SNAP_KEY = 'degzzy_offline_snapshot_v1';
+registerOffline({
+  triggerCloudPush: () => {
+    const w = window as unknown as { pushWorkspaceToCloud?: () => Promise<void> | void };
+    if (typeof w.pushWorkspaceToCloud !== 'function') return;
+    const out = w.pushWorkspaceToCloud();
+    return out instanceof Promise ? out : Promise.resolve();
+  },
+  persistSnapshot: (snap) => {
+    try { localStorage.setItem(OFFLINE_SNAP_KEY, JSON.stringify(snap)); } catch { /* quota */ }
+  },
+  loadSnapshot: () => {
+    try {
+      const raw = localStorage.getItem(OFFLINE_SNAP_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw) as OfflineSnapshot;
+    } catch { return null; }
+  },
+  toast: (msg) => {
+    const w = window as unknown as { toast?: (m: string) => void };
+    if (typeof w.toast === 'function') w.toast(msg);
+  },
+});
+
+// Wire the offline-status pill: simple toast on transitions + status flag
+// on body so CSS can theme an offline banner if desired.
+offlineSubscribeConnectivity((status) => {
+  if (typeof document === 'undefined' || !document.body) return;
+  document.body.dataset.connectivity = status;
+});
+
+// Window re-attach for legacy inline consumers that want to peek/replay.
+type OfflineWindow = {
+  isOnline?: () => boolean;
+  triggerOfflineReplay?: () => Promise<boolean>;
+  getOfflineSnapshot?: () => Readonly<OfflineSnapshot>;
+  markCloudSynced?: (v?: number) => void;
+};
+{
+  const ow = window as unknown as OfflineWindow;
+  ow.isOnline = offlineIsOnline;
+  ow.triggerOfflineReplay = offlineTriggerReplay;
+  ow.getOfflineSnapshot = offlineGetSnapshot;
+  ow.markCloudSynced = offlineMarkCloudSynced;
+}
+
+// OFFLINE-1: register the service worker. Scoped to the deploy base path
+// (Vite's base setting). Best-effort — failure to register is non-fatal.
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  const base = (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL || '/';
+  // Register on next tick so we don't block first paint.
+  setTimeout(() => {
+    navigator.serviceWorker.register(`${base}sw.js`, { scope: base }).catch((err) => {
+      console.warn('[sw] register failed:', err);
+    });
+  }, 1500);
+}
 
 // Window mirrors — legacy inline still uses these names.
 window.loadWorkspaceFromCloud = loadWorkspace;

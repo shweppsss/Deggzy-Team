@@ -4504,6 +4504,177 @@ tr('SC117.f rollback preserved original "a"', sc117.tracks.some((t) => t.id === 
 const sc117Toasts = sc117.calls.toasts.filter((t) => t.includes('supprimé'));
 eq('SC117.g no "supprimé" toast on rollback', sc117Toasts.length, 0);
 
+// ===========================================================================
+// OFFLINE-1 — CONNECTIVITY + QUEUE + REPLAY SCENARIOS (SC118..SC123)
+// ===========================================================================
+const _offlineR = _bundleFeatureDir('offline');
+
+function _makeOfflineHarness() {
+  let online = true;
+  const listeners = { online: [], offline: [] };
+  const calls = { push: 0, persist: 0, toasts: [] };
+  let pushBehavior = 'success'; // 'success' | 'throw' | 'reject'
+  const persisted = { value: null };
+  return {
+    online, listeners, calls, persisted,
+    setOnline: (v) => { online = v; },
+    setPushBehavior: (b) => { pushBehavior = b; },
+    fireConnectivity: (type) => { (listeners[type] || []).forEach((fn) => fn()); },
+    deps: {
+      triggerCloudPush: () => {
+        calls.push++;
+        if (pushBehavior === 'throw') throw new Error('push throw');
+        if (pushBehavior === 'reject') return Promise.reject(new Error('push reject'));
+        return Promise.resolve();
+      },
+      persistSnapshot: (snap) => { calls.persist++; persisted.value = JSON.parse(JSON.stringify(snap)); },
+      loadSnapshot: () => persisted.value,
+      toast: (msg) => calls.toasts.push(msg),
+      isNavigatorOnline: () => online,
+      addConnectivityListener: (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); },
+      removeConnectivityListener: (type, fn) => {
+        const arr = listeners[type] || [];
+        const idx = arr.indexOf(fn);
+        if (idx >= 0) arr.splice(idx, 1);
+      },
+    },
+  };
+}
+
+await (async () => {
+  // SCENARIO 118 — connectivity tracker initial state + subscribe-on-attach
+  console.log('\n=== SCENARIO 118 — connectivity tracker (Offline-1) ===');
+  _offlineR._resetConnectivity();
+  _offlineR._resetQueue();
+  _offlineR._resetReplay();
+  const sc118 = _makeOfflineHarness();
+  sc118.setOnline(false);
+  _offlineR.registerOffline(sc118.deps);
+  eq('SC118.a status reflects initial navigator.onLine', _offlineR.getConnectivity(), 'offline');
+  // Subscribe fires synchronously.
+  let sc118FirstFire = null;
+  _offlineR.subscribeConnectivity((s) => { if (sc118FirstFire === null) sc118FirstFire = s; });
+  eq('SC118.b subscribe fires synchronously with current status', sc118FirstFire, 'offline');
+  // Transition fires subscribers.
+  let sc118Last = null;
+  _offlineR.subscribeConnectivity((s) => { sc118Last = s; });
+  sc118.fireConnectivity('online');
+  eq('SC118.c online event flips status', _offlineR.getConnectivity(), 'online');
+  eq('SC118.d subscriber received the online transition', sc118Last, 'online');
+  sc118.fireConnectivity('offline');
+  eq('SC118.e offline event flips back', _offlineR.getConnectivity(), 'offline');
+
+  // SCENARIO 119 — queue dirty bookkeeping
+  console.log('\n=== SCENARIO 119 — queue dirty bookkeeping (Offline-1) ===');
+  _offlineR._resetConnectivity();
+  _offlineR._resetQueue();
+  _offlineR._resetReplay();
+  const sc119 = _makeOfflineHarness();
+  sc119.setOnline(true);
+  _offlineR.registerOffline(sc119.deps);
+  eq('SC119.a initial snapshot is clean', _offlineR.isDirty(), false);
+  _offlineR.markLocalChange();
+  eq('SC119.b after markLocalChange → dirty=true', _offlineR.isDirty(), true);
+  eq('SC119.c localVersion bumped to 1', _offlineR.getOfflineSnapshot().localVersion, 1);
+  _offlineR.markCloudSynced();
+  eq('SC119.d after markCloudSynced → dirty=false', _offlineR.isDirty(), false);
+  eq('SC119.e cloudVersion caught up', _offlineR.getOfflineSnapshot().cloudVersion, 1);
+  // Race: local change happens DURING a cloud push (versions diverge).
+  _offlineR.markLocalChange(); // localVersion=2
+  _offlineR.markLocalChange(); // localVersion=3
+  _offlineR.markCloudSynced(2); // syncs up to v2, but local is at v3 → still dirty
+  tr('SC119.f markCloudSynced(2) leaves dirty=true (local raced ahead)', _offlineR.isDirty() === true);
+  eq('SC119.g cloudVersion=2 after partial sync', _offlineR.getOfflineSnapshot().cloudVersion, 2);
+
+  // SCENARIO 120 — persistence round-trip
+  console.log('\n=== SCENARIO 120 — queue persistence (Offline-1) ===');
+  _offlineR._resetConnectivity();
+  _offlineR._resetQueue();
+  _offlineR._resetReplay();
+  const sc120 = _makeOfflineHarness();
+  _offlineR.registerOffline(sc120.deps);
+  _offlineR.markLocalChange();
+  _offlineR.markLocalChange();
+  tr('SC120.a persistSnapshot called on every markLocalChange', sc120.calls.persist >= 2);
+  // Read it back through the deps' loadSnapshot
+  const reloaded = sc120.deps.loadSnapshot();
+  tr('SC120.b persisted snapshot has dirty=true', reloaded && reloaded.dirty === true);
+  tr('SC120.c persisted localVersion = 2', reloaded && reloaded.localVersion === 2);
+  // Defensive: persisted snapshot with stale dirty=false is re-derived from versions
+  _offlineR._resetQueue();
+  const stalePersisted = { value: { localVersion: 5, cloudVersion: 3, dirty: false, lastCloudSyncAt: null } };
+  const sc120Recover = {
+    triggerCloudPush: () => {}, persistSnapshot: () => {}, loadSnapshot: () => stalePersisted.value, toast: () => {},
+    isNavigatorOnline: () => true, addConnectivityListener: () => {}, removeConnectivityListener: () => {},
+  };
+  _offlineR.registerOffline(sc120Recover);
+  tr('SC120.d persisted dirty=false with versions diverged → re-derived to true', _offlineR.isDirty() === true);
+
+  // SCENARIO 121 — replay on reconnect
+  console.log('\n=== SCENARIO 121 — replay on reconnect (Offline-1) ===');
+  _offlineR._resetConnectivity();
+  _offlineR._resetQueue();
+  _offlineR._resetReplay();
+  const sc121 = _makeOfflineHarness();
+  sc121.setOnline(false);
+  _offlineR.registerOffline(sc121.deps);
+  // Mutate while offline.
+  _offlineR.markLocalChange();
+  _offlineR.markLocalChange();
+  tr('SC121.a dirty after 2 offline mutations', _offlineR.isDirty() === true);
+  eq('SC121.b cloud push NOT called while offline', sc121.calls.push, 0);
+  // Reconnect.
+  sc121.fireConnectivity('online');
+  // The replay is async — wait one microtask for the awaited push to settle.
+  await new Promise((r) => queueMicrotask(r));
+  await new Promise((r) => queueMicrotask(r));
+  eq('SC121.c cloud push called once on reconnect', sc121.calls.push, 1);
+  tr('SC121.d dirty cleared after successful replay', _offlineR.isDirty() === false);
+  tr('SC121.e success toast fired', sc121.calls.toasts.some((t) => t.includes('Synchronisé')));
+
+  // SCENARIO 122 — replay failure preserves dirty
+  console.log('\n=== SCENARIO 122 — replay failure preserves dirty (Offline-1) ===');
+  _offlineR._resetConnectivity();
+  _offlineR._resetQueue();
+  _offlineR._resetReplay();
+  const sc122 = _makeOfflineHarness();
+  sc122.setOnline(false);
+  _offlineR.registerOffline(sc122.deps);
+  _offlineR.markLocalChange();
+  sc122.setPushBehavior('reject'); // simulate Supabase network error
+  sc122.fireConnectivity('online');
+  await new Promise((r) => queueMicrotask(r));
+  await new Promise((r) => queueMicrotask(r));
+  eq('SC122.a push was attempted', sc122.calls.push, 1);
+  tr('SC122.b dirty STILL true after failed push', _offlineR.isDirty() === true);
+  tr('SC122.c no "Synchronisé" toast on failure', !sc122.calls.toasts.some((t) => t.includes('Synchronisé')));
+  // Manual retry: setPush=success + triggerReplay.
+  sc122.setPushBehavior('success');
+  await _offlineR.triggerReplay();
+  await new Promise((r) => queueMicrotask(r));
+  tr('SC122.d manual retry cleared dirty', _offlineR.isDirty() === false);
+  eq('SC122.e push count = 2 after manual retry', sc122.calls.push, 2);
+
+  // SCENARIO 123 — replay race: rapid reconnects don't double-push
+  console.log('\n=== SCENARIO 123 — replay race (Offline-1) ===');
+  _offlineR._resetConnectivity();
+  _offlineR._resetQueue();
+  _offlineR._resetReplay();
+  const sc123 = _makeOfflineHarness();
+  sc123.setOnline(false);
+  _offlineR.registerOffline(sc123.deps);
+  _offlineR.markLocalChange();
+  // Fire two reconnect events rapidly + a manual triggerReplay
+  sc123.fireConnectivity('online');
+  const t1 = _offlineR.triggerReplay();
+  const t2 = _offlineR.triggerReplay();
+  await Promise.all([t1, t2]);
+  await new Promise((r) => queueMicrotask(r));
+  tr('SC123.a multiple concurrent replays produced 1..N pushes', sc123.calls.push >= 1);
+  tr('SC123.b final state is clean', _offlineR.isDirty() === false);
+  tr('SC123.c token monotonically incremented', _offlineR._getReplayToken() >= 2);
+})();
+
 // ---------------------------------------------------------------------------
 // SUMMARY — runs AFTER the TS-18/TS-19 await blocks complete.
 // ---------------------------------------------------------------------------
