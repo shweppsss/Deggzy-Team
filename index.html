@@ -14222,7 +14222,10 @@ document.addEventListener('keydown', (e) => {
 });
 
 // Wire the new Milanote-style inspiration dropzone (file picker + drag/drop + URL auto-detect)
-if (typeof setupInspiDropzone === 'function') setupInspiDropzone();
+// Deferred — body references window.handleInspiUrlChange which is attached by main.ts.
+window.__bootDefer(() => {
+  if (typeof setupInspiDropzone === 'function') setupInspiDropzone();
+});
 
 /* ============================
    INSTALL HINT (Add to Home Screen)
