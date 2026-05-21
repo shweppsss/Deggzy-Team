@@ -70,7 +70,7 @@ export function renderEvent(e: EventEntity, deps: RenderDeps, ctx: EventRenderCo
 
     <div class="detail-section">
       <h3>Informations</h3>
-      <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px;">
+      <div class="detail-grid-3col-skewed">
         <div class="detail-field"><label>Date</label><input type="date" value="${e.date || ''}" onchange="updateEventField('${e.id}','date',this.value)" /></div>
         <div class="detail-field"><label>Heure</label><input type="time" value="${e.time || ''}" onchange="updateEventField('${e.id}','time',this.value)" /></div>
         <div class="detail-field"><label>Durée</label>
@@ -111,7 +111,7 @@ export function renderEvent(e: EventEntity, deps: RenderDeps, ctx: EventRenderCo
     <div class="detail-section">
       <h3>Checklist suggérée pour ce type d'événement</h3>
       <div class="detail-checklist">
-        ${deps.suggestChecklist(e.type).map((c) => `<div style="display:flex; gap:10px; align-items:center; font-size:13px; color: var(--text-soft);"><span style="width:6px; height:6px; background: var(--accent); border-radius:50%;"></span>${c}</div>`).join('')}
+        ${deps.suggestChecklist(e.type).map((c) => `<div class="event-checklist-row"><span style="width:6px; height:6px; background: var(--accent); border-radius:50%;"></span>${c}</div>`).join('')}
       </div>
     </div>
 

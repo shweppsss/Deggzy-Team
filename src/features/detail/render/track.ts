@@ -45,11 +45,11 @@ export function renderAudioInitial(t: TrackEntity, deps: RenderDeps): string {
     // real duration + filename once the IDB blob is loaded.
     return (
       deps.trackAudioPillHTML(t) +
-      `<div class="track-audio-meta" data-meta-for="${deps.escapeHtml(t.id)}" style="margin-top:10px;"></div>` +
-      `<div class="track-audio-actions" data-actions-for="${deps.escapeHtml(t.id)}" style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;"></div>`
+      `<div class="track-audio-meta track-audio-meta-spacer" data-meta-for="${deps.escapeHtml(t.id)}"></div>` +
+      `<div class="track-audio-actions" data-actions-for="${deps.escapeHtml(t.id)}"></div>`
     );
   }
-  return `<label class="detail-audio-empty">+ Charger l'audio (WAV / MP3 / FLAC)<input type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg" style="display:none;" onchange="handleDetailAudio('${t.id}', event)" /></label>`;
+  return `<label class="detail-audio-empty">+ Charger l'audio (WAV / MP3 / FLAC)<input type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg" class="u-hidden-input" onchange="handleDetailAudio('${t.id}', event)" /></label>`;
 }
 
 export function renderTrack(t: TrackEntity, deps: RenderDeps, ctx: TrackRenderContext): string {
@@ -69,7 +69,7 @@ export function renderTrack(t: TrackEntity, deps: RenderDeps, ctx: TrackRenderCo
     <div class="track-hero">
       <label class="track-hero-cover ${hasCover ? 'has-image' : ''}" data-cover-for-detail="${t.id}" style="${coverInline ? `background-image:url('${coverInline}')` : ''}">
         ${hasCover ? '' : '<span class="track-hero-cover-empty">+ Ajouter cover</span>'}
-        <input type="file" accept="image/*" style="display:none;" onchange="handleDetailCover('${t.id}', event)" />
+        <input type="file" accept="image/*" class="u-hidden-input" onchange="handleDetailCover('${t.id}', event)" />
       </label>
       <h1 class="track-hero-title" contenteditable="true" onblur="updateTrackField('${t.id}','name',this.innerText.trim())">${esc(t.name)}</h1>
       <div class="track-hero-meta">${heroMeta.join(' · ')}</div>
@@ -124,13 +124,13 @@ export function renderTrack(t: TrackEntity, deps: RenderDeps, ctx: TrackRenderCo
             </div>
           `).join('')}
         </div>
-      ` : `<div style="font-size: 13px; color: var(--text-soft); margin-bottom: 10px;">Aucun événement pour l'instant.</div>`}
-      <button class="btn" style="margin-top: 10px;" onclick="addEventForTrack('${t.id}')">+ Ajouter</button>
+      ` : `<div class="track-events-empty">Aucun événement pour l'instant.</div>`}
+      <button class="btn track-add-event-btn" onclick="addEventForTrack('${t.id}')">+ Ajouter</button>
     </div>
 
     <details class="detail-collapsible">
       <summary>Plus d'infos · ISRC, Publishing</summary>
-      <div class="info-list" style="margin: 12px 0 0;">
+      <div class="info-list track-info-list-spacer">
         <div class="info-row">
           <div class="info-label">ISRC</div>
           <input class="info-value" placeholder="FR-XXX-26-00001" value="${t.isrc || ''}" onchange="updateTrackField('${t.id}','isrc',this.value)" />
