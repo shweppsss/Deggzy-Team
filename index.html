@@ -7516,6 +7516,32 @@
 window.App = window.App || {};
 
 /* ============================================================================
+   Boot defer queue.
+   The inline <script> runs synchronously during HTML parse, BEFORE the
+   deferred <script type="module" src="/src/main.ts">. So any inline
+   top-level call that touches `window.state` (or anything else attached
+   by main.ts) would ReferenceError. To honour the "lazy use" invariant
+   documented above the App.Runtime marker, we queue boot work here and
+   flush after main.ts has run — the `load` event guarantees that.
+   ============================================================================ */
+window.__bootQueue = window.__bootQueue || [];
+window.__bootDefer = function(fn) {
+  if (typeof fn !== 'function') return;
+  // If main.ts has already finished (e.g. boot fires from a late callback),
+  // run immediately. Otherwise queue + flush on load.
+  if (window.__bootFlushed) { try { fn(); } catch (e) { console.error('[Boot] deferred call:', e); } return; }
+  window.__bootQueue.push(fn);
+};
+window.addEventListener('load', function() {
+  window.__bootFlushed = true;
+  var q = window.__bootQueue || [];
+  window.__bootQueue = [];
+  for (var i = 0; i < q.length; i++) {
+    try { q[i](); } catch (e) { console.error('[Boot] queued task:', e); }
+  }
+});
+
+/* ============================================================================
    App.Boot — EXTRACTED in Phase TS-2 to /src/core/boot.ts.
 
    The Boot IIFE that used to live here is now a typed TypeScript module
@@ -14038,8 +14064,9 @@ function diffStateScopes(oldState, newState) {
   return Array.from(out);
 }
 
-// Bump streak on app open (once per day)
-(function tickStreakOnOpen() {
+// Bump streak on app open (once per day) — DEFERRED to load event because
+// `state` is on window.state via the TS-12 defineProperty in main.ts.
+window.__bootDefer(function tickStreakOnOpen() {
   if (!state.streak) state.streak = { last: null, days: 0 };
   const today = new Date().toISOString().slice(0,10);
   if (state.streak.last === today) return;
@@ -14048,23 +14075,27 @@ function diffStateScopes(oldState, newState) {
   state.streak.days = state.streak.last === yest ? state.streak.days + 1 : 1;
   state.streak.last = today;
   save();
-  // Small celebration if streak >= 3
   if (state.streak.days >= 3 && state.streak.days > prev) {
     setTimeout(() => {
       toast(`🔥 ${state.streak.days} jours d'affilée. Tu tiens le rythme.`);
       if (state.streak.days % 7 === 0) confetti(60);
     }, 800);
   }
-})();
+});
 
 // Boot the auth screen FIRST — errors in renders below must never block login.
-checkAuth().catch(e => console.error('[Boot] checkAuth failed:', e));
+// Deferred so window.checkAuth + window.state are available.
+window.__bootDefer(() => {
+  checkAuth().catch(e => console.error('[Boot] checkAuth failed:', e));
+});
 
 // Sentry — opt-in JS error capture. Reads DSN from localStorage; the SDK
 // only loads if one is configured, so the default install pays zero cost.
-if (typeof initSentryIfConfigured === 'function') {
-  initSentryIfConfigured().catch(e => console.warn('[Sentry] boot init failed:', e));
-}
+window.__bootDefer(() => {
+  if (typeof initSentryIfConfigured === 'function') {
+    initSentryIfConfigured().catch(e => console.warn('[Sentry] boot init failed:', e));
+  }
+});
 
 // Safety net: if no auth form is visible 1.6s after boot, force the sign-in view.
 // We trust computed style — not inline el.style.display — so this still works
@@ -14089,21 +14120,19 @@ setTimeout(() => {
   }
 }, 1600);
 
-// Now the heavy renders — wrapped so a single section error stays contained.
-try { renderTabbar(); } catch (e) { console.error('[Boot] renderTabbar failed:', e); }
-try { renderAll(); } catch (e) { console.error('[Boot] renderAll failed:', e); }
+// Now the heavy renders — deferred so window.state + the section renderers
+// are wired by main.ts. Each call is wrapped so one section error stays contained.
+window.__bootDefer(() => {
+  try { renderTabbar(); } catch (e) { console.error('[Boot] renderTabbar failed:', e); }
+  try { renderAll(); } catch (e) { console.error('[Boot] renderAll failed:', e); }
 
-// Rogue field cleanup — runs FIRST because it can free 30+ MB on a single track
-// and unblocks subsequent save() calls that were failing on quota.
-setTimeout(() => { cleanRogueTrackFields().catch(e => console.warn('Rogue cleanup error:', e)); }, 1200);
-// One-time migration: move base64 covers from localStorage to IndexedDB (frees space)
-setTimeout(() => { migrateCoversToIDB().catch(e => console.warn('Cover migration error:', e)); }, 1500);
-// Same migration for inspirations — image/video base64 in state.inspirations
-setTimeout(() => { migrateInspirationsToCloudIDB().catch(e => console.warn('Inspiration migration error:', e)); }, 1800);
-// Audio migration — legacy base64 audios are the heaviest single offender (6-50 MB per track)
-setTimeout(() => { migrateAudiosToIDB().catch(e => console.warn('Audio migration error:', e)); }, 2100);
-// Todo priority migration — cheap, runs early so dashboard renders with correct priorities.
-setTimeout(() => { try { ensureTodoPriorityMigration(); } catch (e) { console.warn('Priority migration error:', e); } }, 1300);
+  // Rogue field cleanup — runs FIRST because it can free 30+ MB on a single track.
+  setTimeout(() => { cleanRogueTrackFields().catch(e => console.warn('Rogue cleanup error:', e)); }, 1200);
+  setTimeout(() => { migrateCoversToIDB().catch(e => console.warn('Cover migration error:', e)); }, 1500);
+  setTimeout(() => { migrateInspirationsToCloudIDB().catch(e => console.warn('Inspiration migration error:', e)); }, 1800);
+  setTimeout(() => { migrateAudiosToIDB().catch(e => console.warn('Audio migration error:', e)); }, 2100);
+  setTimeout(() => { try { ensureTodoPriorityMigration(); } catch (e) { console.warn('Priority migration error:', e); } }, 1300);
+});
 
 // User chip
 function refreshUserChip() {
@@ -14127,7 +14156,7 @@ function refreshUserChip() {
   // Paint presence dots on whatever avatar nodes just rendered.
   if (typeof applyPresenceDots === 'function') applyPresenceDots();
 }
-refreshUserChip();
+window.__bootDefer(refreshUserChip);
 
 // Hydrate any [data-icn] placeholders that exist at boot (sidebar nav, static markup)
 if (document.readyState === 'loading') {
