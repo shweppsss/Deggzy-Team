@@ -61,7 +61,7 @@
     /* Accent — Apple SF Blue (system color) */
     --accent: #0A84FF;
     --accent-hover: #409CFF;
-    --accent-soft: rgba(10, 132, 255, 0.14);
+    --accent-soft: rgba(var(--accent-rgb), 0.14);
     --accent-rgb: 10, 132, 255;
     /* Apple system colors (for status / categories) */
     --sys-blue: #0A84FF;
@@ -866,7 +866,7 @@
     cursor: pointer;
     white-space: nowrap;
   }
-  .status-chip[data-status="single"] { background: var(--accent-soft); color: var(--accent); border-color: rgba(10,132,255,0.3); }
+  .status-chip[data-status="single"] { background: var(--accent-soft); color: var(--accent); border-color: rgba(var(--accent-rgb), 0.3); }
   .status-chip[data-status="projet"] { background: rgba(90,166,112,0.1); color: var(--success); border-color: rgba(90,166,112,0.3); }
   .status-chip[data-status="produit"] { color: var(--text); }
   .status-chip[data-status="mixe"] { color: #7AB5C9; border-color: rgba(122,181,201,0.3); background: rgba(122,181,201,0.08); }
@@ -1159,7 +1159,7 @@
     transition: background-color var(--duration-fast) var(--ease-standard);
     cursor: cell;
   }
-  .cal-week-hour-slot:hover { background: rgba(10, 132, 255, 0.06); }
+  .cal-week-hour-slot:hover { background: rgba(var(--accent-rgb), 0.06); }
   .cal-week-event {
     position: absolute;
     left: 2px; right: 2px;
@@ -2614,7 +2614,7 @@
      URGENT BOX (Dashboard)
      ============================ */
   .urgent-box {
-    background: linear-gradient(135deg, rgba(196,90,74,0.16), rgba(10,132,255,0.10));
+    background: linear-gradient(135deg, rgba(196,90,74,0.16), rgba(var(--accent-rgb), 0.10));
     border: 1px solid var(--danger);
     border-radius: var(--radius-lg);
     padding: 22px 24px;
@@ -2706,8 +2706,8 @@
      MOMENTUM CARD
      ============================ */
   .momentum-card {
-    background: linear-gradient(135deg, var(--accent-soft), rgba(10,132,255,0.04));
-    border: 1px solid rgba(10,132,255,0.25);
+    background: linear-gradient(135deg, var(--accent-soft), rgba(var(--accent-rgb), 0.04));
+    border: 1px solid rgba(var(--accent-rgb), 0.25);
     border-radius: var(--radius-lg);
     padding: 18px 24px;
     margin-bottom: 22px;
@@ -2941,11 +2941,11 @@
   }
   .card:hover {
     transform: translateY(-2px);
-    border-color: rgba(10,132,255,0.25);
+    border-color: rgba(var(--accent-rgb), 0.25);
   }
   .kpi-card:hover {
     transform: translateY(-2px);
-    border-color: rgba(10,132,255,0.3);
+    border-color: rgba(var(--accent-rgb), 0.3);
   }
   .track-card:hover {
     transform: translateY(-3px);
@@ -3291,7 +3291,7 @@
     top: 40px; left: 50%;
     transform: translateX(-50%);
     width: 320px; height: 320px;
-    background: var(--hero-glow, radial-gradient(circle, rgba(10,132,255,0.22), transparent 60%));
+    background: var(--hero-glow, radial-gradient(circle, rgba(var(--accent-rgb), 0.22), transparent 60%));
     filter: blur(50px);
     z-index: 0;
     pointer-events: none;
@@ -3501,7 +3501,7 @@
   .auth-bg-glow {
     position: absolute;
     width: 720px; height: 720px;
-    background: radial-gradient(circle, rgba(10,132,255,0.07), transparent 55%);
+    background: radial-gradient(circle, rgba(var(--accent-rgb), 0.07), transparent 55%);
     top: 45%; left: 50%;
     transform: translate(-50%, -50%);
     pointer-events: none;
@@ -3528,7 +3528,7 @@
       0 40px 100px rgba(0,0,0,0.6),
       0 12px 32px rgba(0,0,0,0.4),
       inset 0 1px 0 rgba(255,255,255,0.06),
-      0 0 0 1px rgba(10,132,255,0.04);
+      0 0 0 1px rgba(var(--accent-rgb), 0.04);
     z-index: 1;
   }
   .auth-card::before {
@@ -3537,7 +3537,7 @@
     inset: 0;
     border-radius: inherit;
     padding: 1px;
-    background: linear-gradient(180deg, rgba(10,132,255,0.18), transparent 50%);
+    background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.18), transparent 50%);
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor;
     mask-composite: exclude;
@@ -3552,7 +3552,7 @@
     height: 56px;
     border-radius: 16px;
     background: linear-gradient(180deg, #1A2230 0%, #0B1220 100%);
-    border: 1px solid rgba(10,132,255,0.32);
+    border: 1px solid rgba(var(--accent-rgb), 0.32);
     margin: 0 auto 18px;
     display: flex;
     align-items: center;
@@ -3563,8 +3563,8 @@
     letter-spacing: -0.02em;
     position: relative;
     box-shadow:
-      0 10px 30px rgba(10,132,255,0.18),
-      0 0 0 1px rgba(10,132,255,0.06),
+      0 10px 30px rgba(var(--accent-rgb), 0.18),
+      0 0 0 1px rgba(var(--accent-rgb), 0.06),
       inset 0 1px 0 rgba(255,255,255,0.08),
       inset 0 -1px 0 rgba(0,0,0,0.4);
   }
@@ -3573,7 +3573,7 @@
     position: absolute;
     inset: 3px;
     border-radius: 13px;
-    box-shadow: inset 0 0 0 0.5px rgba(10,132,255,0.18);
+    box-shadow: inset 0 0 0 0.5px rgba(var(--accent-rgb), 0.18);
     pointer-events: none;
   }
   .auth-title {
@@ -3631,7 +3631,7 @@
     outline: none;
     border-color: var(--accent);
     background: rgba(10, 10, 10, 0.85);
-    box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.14);
+    box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.14);
   }
   .auth-field input:invalid:not(:focus):not(:placeholder-shown) {
     border-color: rgba(255, 69, 58, 0.5);
@@ -3658,7 +3658,7 @@
     -webkit-tap-highlight-color: transparent;
     line-height: 1.2;
   }
-  .auth-role:hover { color: var(--text); border-color: rgba(10,132,255,0.35); }
+  .auth-role:hover { color: var(--text); border-color: rgba(var(--accent-rgb), 0.35); }
   .auth-role.active {
     background: var(--accent);
     color: var(--bg);
@@ -4024,7 +4024,7 @@
     transition: var(--transition);
     font-family: inherit;
   }
-  .auth-submit:hover { background: var(--accent-hover); transform: translateY(-1px); box-shadow: 0 8px 24px rgba(10,132,255,0.30); }
+  .auth-submit:hover { background: var(--accent-hover); transform: translateY(-1px); box-shadow: 0 8px 24px rgba(var(--accent-rgb), 0.30); }
   .auth-submit:active { transform: translateY(0); }
   .auth-footer {
     text-align: center;
@@ -4079,7 +4079,7 @@
     justify-content: center;
     flex-shrink: 0;
     text-transform: uppercase;
-    box-shadow: 0 4px 12px rgba(10,132,255,0.3);
+    box-shadow: 0 4px 12px rgba(var(--accent-rgb), 0.3);
   }
   .auth-profile-info {
     flex: 1;
@@ -4161,7 +4161,7 @@
     justify-content: center;
     margin: 0 auto 14px;
     text-transform: uppercase;
-    box-shadow: 0 8px 24px rgba(10,132,255,0.35);
+    box-shadow: 0 8px 24px rgba(var(--accent-rgb), 0.35);
   }
   .auth-pin-greet {
     color: var(--text-soft);
@@ -4174,7 +4174,7 @@
     font-size: 12px;
     color: var(--text-soft);
     line-height: 1.5;
-    background: rgba(10,132,255,0.04);
+    background: rgba(var(--accent-rgb), 0.04);
     border-left: 2px solid var(--accent);
     padding: 10px 12px;
     border-radius: 6px;
@@ -4299,7 +4299,7 @@
      BUDGET
      ============================ */
   .budget-hero {
-    background: linear-gradient(135deg, var(--surface) 0%, rgba(10,132,255,0.08) 100%);
+    background: linear-gradient(135deg, var(--surface) 0%, rgba(var(--accent-rgb), 0.08) 100%);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     padding: 28px;
@@ -4701,7 +4701,7 @@
   .list-row:active { transform: scale(0.997); background: rgba(255, 255, 255, 0.04); }
   .list-row:focus-visible {
     outline: none;
-    background: rgba(10, 132, 255, 0.06);
+    background: rgba(var(--accent-rgb), 0.06);
     box-shadow: inset 2px 0 0 var(--accent), inset 0 -1px 0 var(--border-soft);
   }
   .list-row.is-done { opacity: 0.5; }
@@ -4939,7 +4939,7 @@
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
-    text-shadow: 0 1px 60px rgba(10,132,255,0.18);
+    text-shadow: 0 1px 60px rgba(var(--accent-rgb), 0.18);
   }
   .dash-hero-label {
     font: var(--font-body-l);
@@ -4967,7 +4967,7 @@
     width: 8px; height: 8px;
     border-radius: 50%;
     background: var(--accent);
-    box-shadow: 0 0 0 4px rgba(10,132,255,0.18);
+    box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.18);
     flex-shrink: 0;
   }
   .dash-hero-phase-body { min-width: 0; flex: 1; }
@@ -4989,7 +4989,7 @@
 
   /* Urgent — version condensée, n'apparaît que si actif */
   .dash-urgent {
-    background: linear-gradient(135deg, rgba(255,69,58,0.10), rgba(10,132,255,0.06));
+    background: linear-gradient(135deg, rgba(255,69,58,0.10), rgba(var(--accent-rgb), 0.06));
     border: 1px solid rgba(255,69,58,0.32);
     border-radius: var(--radius-lg);
     padding: 18px 22px;
@@ -5991,7 +5991,7 @@
   .inspi-card-v2:focus-visible {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(10,132,255,0.20), var(--elev-2);
+    box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.20), var(--elev-2);
   }
 
   .inspi-card-media {
@@ -6028,7 +6028,7 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    background: linear-gradient(135deg, rgba(10,132,255,0.18), rgba(10,132,255,0.04));
+    background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.18), rgba(var(--accent-rgb), 0.04));
   }
   .inspi-card-link-glyph {
     color: var(--accent);
@@ -6056,7 +6056,7 @@
 
   .inspi-card-note {
     padding: 24px 20px 22px;
-    background: linear-gradient(135deg, rgba(10,132,255,0.06), rgba(10,132,255,0.01));
+    background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.06), rgba(var(--accent-rgb), 0.01));
     min-height: 120px;
     display: flex;
     flex-direction: column;
@@ -6123,12 +6123,12 @@
                 background var(--duration-fast) var(--ease-standard);
     min-height: 96px;
   }
-  .inspi-dropzone:hover { border-color: var(--accent); background: rgba(10,132,255,0.04); }
-  .inspi-dropzone.is-drag { border-color: var(--accent); background: rgba(10,132,255,0.10); }
+  .inspi-dropzone:hover { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.04); }
+  .inspi-dropzone.is-drag { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.10); }
   .inspi-dropzone:focus-visible {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(10,132,255,0.20);
+    box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.20);
   }
   .inspi-dropzone-default {
     display: flex;
@@ -6317,7 +6317,7 @@
   .pin-key:focus-visible {
     outline: none;
     background: rgba(255, 255, 255, 0.14);
-    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.35);
+    box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.35);
   }
   .pin-key-num {
     font-size: 30px;
