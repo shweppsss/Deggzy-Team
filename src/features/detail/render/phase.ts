@@ -31,7 +31,7 @@ export function renderPhase(p: PhaseEntity, deps: RenderDeps, ctx: PhaseRenderCo
     </div>
     <div class="detail-section">
       <h3>Actions de la phase</h3>
-      <ul style="padding-left:18px; color: var(--text-soft); font-size: 14px; line-height: 1.8;">
+      <ul class="phase-bullet-list">
         ${items.map((i) => `<li>${esc(i)}</li>`).join('')}
       </ul>
     </div>

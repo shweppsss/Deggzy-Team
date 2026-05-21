@@ -30,7 +30,7 @@ export function renderTodo(t: TodoEntity, deps: RenderDeps): string {
 
     <div class="detail-section">
       <h3>Paramètres</h3>
-      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px;">
+      <div class="detail-grid-3col-equal">
         <div class="detail-field"><label>Catégorie</label>
           <select onchange="updateTodoField('${t.id}','cat',this.value)">
             ${deps.todoCategories.map((c) => `<option ${t.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
