@@ -7,6 +7,7 @@ import { getState } from '../../data';
 import type { VideoDeps, VideoItem, VideoModel, VideoSectionKind } from './types';
 import { VIDEO_CONFIGS } from './types';
 import { buildVideoSectionView } from './composition';
+import { viewTransition } from '../../features/mobile/transitions';
 
 export interface VideoSectionSideEffects {
   /** Hydrate <video> elements after mount — fills `src` from IDB blob URLs. */
@@ -28,10 +29,10 @@ export function renderVideoSectionView(kind: VideoSectionKind, deps: VideoDeps):
   const model: VideoModel = { kind, items };
   const result = buildVideoSectionView(model, deps);
   if (result.empty) {
-    grid.innerHTML = result.emptyHtml;
+    viewTransition(() => { grid.innerHTML = result.emptyHtml; });
     return;
   }
-  grid.innerHTML = result.gridHtml;
+  viewTransition(() => { grid.innerHTML = result.gridHtml; });
   if (_fx.hydrateVideoSection) {
     try { Promise.resolve(_fx.hydrateVideoSection(kind)).catch(() => {}); } catch (_e) { /* no-op */ }
   }

@@ -20,6 +20,7 @@ import {
   formatAudioTime,
 } from '../../lib/legacy-bridge';
 import { renderAudioInitial, getRenderDeps, type TrackEntity } from './render';
+import { viewTransition } from '../mobile/transitions';
 
 function findTrack(trackId: string): TrackEntity | undefined {
   const tracks = getLegacyState().tracks;
@@ -54,13 +55,13 @@ export async function hydrateDetailAudio(trackId: string): Promise<void> {
   // Re-use the typed audio-slot renderer (TS-7) for the skeleton.
   const deps = getRenderDeps();
   if (!data) {
-    slot.innerHTML = renderAudioInitial({ id: trackId }, deps);
+    viewTransition(() => { slot.innerHTML = renderAudioInitial({ id: trackId }, deps); });
     return;
   }
   // Make sure the pill skeleton is present (first open may render before
   // hydrate finishes if openDetail was navigated to from a cold load).
   if (!slot.querySelector('.track-audio')) {
-    slot.innerHTML = renderAudioInitial(t, deps);
+    viewTransition(() => { slot.innerHTML = renderAudioInitial(t, deps); });
   }
   const meta = slot.querySelector(`[data-meta-for="${trackId}"]`);
   if (meta) {
@@ -68,11 +69,13 @@ export async function hydrateDetailAudio(trackId: string): Promise<void> {
   }
   const actions = slot.querySelector(`[data-actions-for="${trackId}"]`);
   if (actions) {
-    actions.innerHTML = `
-      <a class="btn btn-sm" href="${data.url}" download="${escapeHtml(data.name)}">↓ Télécharger</a>
-      <button class="btn btn-sm" onclick="clearAudio('${trackId}'); openDetail('track','${trackId}');" type="button">Retirer</button>
-      <label class="btn btn-sm" style="cursor:pointer;">Remplacer<input type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg" style="display:none;" onchange="handleDetailAudio('${trackId}', event)" /></label>
-    `;
+    viewTransition(() => {
+      actions.innerHTML = `
+        <a class="btn btn-sm" href="${data.url}" download="${escapeHtml(data.name)}">↓ Télécharger</a>
+        <button class="btn btn-sm" onclick="clearAudio('${trackId}'); openDetail('track','${trackId}');" type="button">Retirer</button>
+        <label class="btn btn-sm" style="cursor:pointer;">Remplacer<input type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg" style="display:none;" onchange="handleDetailAudio('${trackId}', event)" /></label>
+      `;
+    });
   }
   // Duration probe — same trick the catalogue uses.
   try {

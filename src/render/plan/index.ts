@@ -6,6 +6,7 @@
 // ============================================================================
 
 import { escapeHtml } from '../../lib/format-utils';
+import { viewTransition } from '../../features/mobile/transitions';
 
 export interface PlanPhase {
   label: string;
@@ -43,5 +44,5 @@ export function buildPlanView(deps: PlanDeps): string {
 export function renderPlanView(deps: PlanDeps): void {
   const c = document.getElementById('phasesContainer');
   if (!c) return;
-  c.innerHTML = buildPlanView(deps);
+  viewTransition(() => { c.innerHTML = buildPlanView(deps); });
 }

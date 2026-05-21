@@ -32,6 +32,7 @@ import type {
 } from './types';
 import { buildDashboardView } from './composition';
 import { bindAliasInput } from './widgets/alias-binder';
+import { viewTransition } from '../../features/mobile/transitions';
 
 // ---------------------------------------------------------------------------
 // Side-effects hooks — registered by main.ts. Keeps mount.ts decoupled
@@ -111,7 +112,7 @@ function setText(id: string, text: string): void {
 
 function setHtml(id: string, html: string): HTMLElement | null {
   const el = document.getElementById(id);
-  if (el) el.innerHTML = html;
+  if (el) viewTransition(() => { el.innerHTML = html; });
   return el;
 }
 
@@ -180,7 +181,7 @@ export function renderDashboardView(deps: DashboardDeps): void {
   setText('dashHeroLabel', result.heroLabel);
   const phaseBox = document.getElementById('dashHeroPhase');
   if (phaseBox) {
-    phaseBox.innerHTML = result.heroPhaseHtml;
+    viewTransition(() => { phaseBox.innerHTML = result.heroPhaseHtml; });
     (phaseBox as HTMLElement).onclick = () => {
       if (model.phaseIdx >= 0) _fx.openDetail?.('phase', model.phaseIdx);
     };
@@ -190,7 +191,7 @@ export function renderDashboardView(deps: DashboardDeps): void {
   const urgentBox = document.getElementById('urgentBox') as HTMLElement | null;
   if (urgentBox) {
     urgentBox.hidden = result.urgentHidden;
-    urgentBox.innerHTML = result.urgentHidden ? '' : result.urgentHtml;
+    viewTransition(() => { urgentBox.innerHTML = result.urgentHidden ? '' : result.urgentHtml; });
   }
 
   // Role widgets + team activity feed (sub-renderers — still inline)
@@ -209,7 +210,7 @@ export function renderDashboardView(deps: DashboardDeps): void {
     if (result.upcomingEmpty) {
       upcomingEl.outerHTML = result.upcomingEmptyHtml;
     } else {
-      upcomingEl.innerHTML = result.upcomingHtml;
+      viewTransition(() => { upcomingEl.innerHTML = result.upcomingHtml; });
     }
   }
 
@@ -228,7 +229,7 @@ export function renderDashboardView(deps: DashboardDeps): void {
         releaseEl.setAttribute('tabindex', '0');
         releaseEl.setAttribute('aria-label', result.releaseDataset.ariaLabel);
       }
-      releaseEl.innerHTML = result.releaseHtml;
+      viewTransition(() => { releaseEl.innerHTML = result.releaseHtml; });
       releaseEl.onclick = () => {
         if (result.releaseEventId) _fx.openDetail?.('event', result.releaseEventId);
       };

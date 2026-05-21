@@ -10,6 +10,7 @@
 
 import type { AudioCacheDeps } from './types';
 import { getTrackAudioUrl, getTrackCoverUrl } from './urls';
+import { viewTransition } from '../../mobile/transitions';
 
 let _deps: AudioCacheDeps | null = null;
 
@@ -49,7 +50,7 @@ export async function hydrateAllAudios(): Promise<void> {
     const slot = document.querySelector<HTMLElement>(`.track-audio-slot[data-track-id="${t.id}"]`);
     if (!slot) continue;
     if (!data) {
-      slot.innerHTML = _deps.trackAudioInitialHTML({ id: t.id });
+      viewTransition(() => { slot.innerHTML = _deps!.trackAudioInitialHTML({ id: t.id }); });
       continue;
     }
     const meta = slot.querySelector<HTMLElement>(`[data-meta-for="${t.id}"]`);
