@@ -6,6 +6,7 @@ import { getState } from '../../data';
 import type { AssetItem, AssetModel } from './types';
 import { ASSET_CATEGORIES } from './calculations';
 import { buildAssetsView } from './composition';
+import { viewTransition } from '../../features/mobile/transitions';
 
 interface StateSlice {
   assets?: Record<string, AssetItem[]>;
@@ -20,6 +21,6 @@ export function renderAssetsView(): void {
   const result = buildAssetsView(model);
   for (const grid of result.grids) {
     const container = document.getElementById(grid.containerId);
-    if (container) container.innerHTML = grid.html;
+    if (container) viewTransition(() => { container.innerHTML = grid.html; });
   }
 }

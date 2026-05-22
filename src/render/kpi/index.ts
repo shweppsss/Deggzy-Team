@@ -4,6 +4,7 @@
 
 import { escapeHtml } from '../../lib/format-utils';
 import { getState } from '../../data';
+import { viewTransition } from '../../features/mobile/transitions';
 
 export interface KpiRow {
   label?: string;
@@ -35,5 +36,5 @@ export function renderKpiView(): void {
   if (!g) return;
   const state = getState() as { kpis?: KpiRow[] };
   const result = buildKpiView(Array.isArray(state.kpis) ? state.kpis : []);
-  g.innerHTML = result.html;
+  viewTransition(() => { g.innerHTML = result.html; });
 }

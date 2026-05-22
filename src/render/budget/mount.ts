@@ -5,6 +5,7 @@
 import { getState } from '../../data';
 import type { BudgetDeps, BudgetModel, BudgetState, BudgetTrack } from './types';
 import { buildBudgetView } from './composition';
+import { viewTransition } from '../../features/mobile/transitions';
 
 interface StateSlice {
   budget?: BudgetState;
@@ -19,11 +20,11 @@ export function renderBudgetView(deps: BudgetDeps): void {
   };
   const result = buildBudgetView(model, deps);
   const hero = document.getElementById('budgetHero');
-  if (hero) hero.innerHTML = result.heroHtml;
+  if (hero) viewTransition(() => { hero.innerHTML = result.heroHtml; });
   const cats = document.getElementById('budgetCats');
-  if (cats) cats.innerHTML = result.catsHtml;
+  if (cats) viewTransition(() => { cats.innerHTML = result.catsHtml; });
   const txList = document.getElementById('txList');
-  if (txList) txList.innerHTML = result.txHtml;
+  if (txList) viewTransition(() => { txList.innerHTML = result.txHtml; });
   const splits = document.getElementById('splitsTable');
-  if (splits) splits.innerHTML = result.splitsHtml;
+  if (splits) viewTransition(() => { splits.innerHTML = result.splitsHtml; });
 }

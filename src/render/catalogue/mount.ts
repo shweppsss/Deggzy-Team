@@ -5,6 +5,7 @@
 import { getState } from '../../data';
 import type { CatalogueDeps, CatalogueModel, CatalogueTrack } from './types';
 import { buildCatalogueView } from './composition';
+import { viewTransition } from '../../features/mobile/transitions';
 
 export interface CatalogueSideEffects {
   attachTrackEvents?: (id: string) => void;
@@ -30,7 +31,7 @@ export function renderCatalogueView(deps: CatalogueDeps): void {
   const state = getState() as StateSlice;
   const model: CatalogueModel = { tracks: Array.isArray(state.tracks) ? state.tracks : [] };
   const result = buildCatalogueView(model, deps);
-  grid.innerHTML = result.gridHtml;
+  viewTransition(() => { grid.innerHTML = result.gridHtml; });
   // Re-attach per-card event listeners + swipe handlers.
   model.tracks.forEach((t) => {
     if (_fx.attachTrackEvents) {

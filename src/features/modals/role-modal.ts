@@ -16,6 +16,7 @@
 import { showModal, hideModal } from './shared';
 import { escapeHtml } from '../../lib/format-utils';
 import { getRoles, getCurrentRoleKey, hideAccountMenu } from '../../lib/legacy-bridge';
+import { viewTransition } from '../mobile/transitions';
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
   artiste: 'Tes sorties, sessions studio, interviews, podcasts.',
@@ -49,18 +50,20 @@ export function openRoleModal(): void {
   const currentKey = getCurrentRoleKey();
   _pendingRoleKey = currentKey;
   const roles = getRoles();
-  grid.innerHTML = roles
-    .map(
-      (r) => `
-    <button type="button" class="role-option ${r.key === currentKey ? 'active' : ''}"
-            data-role-key="${escapeHtml(r.key)}"
-            onclick="_selectRole('${escapeHtml(r.key)}')">
-      <span class="role-option-label">${escapeHtml(r.label)}</span>
-      <span class="role-option-sub">${escapeHtml(ROLE_DESCRIPTIONS[r.key] || '')}</span>
-    </button>
-  `,
-    )
-    .join('');
+  viewTransition(() => {
+    grid.innerHTML = roles
+      .map(
+        (r) => `
+      <button type="button" class="role-option ${r.key === currentKey ? 'active' : ''}"
+              data-role-key="${escapeHtml(r.key)}"
+              onclick="_selectRole('${escapeHtml(r.key)}')">
+        <span class="role-option-label">${escapeHtml(r.label)}</span>
+        <span class="role-option-sub">${escapeHtml(ROLE_DESCRIPTIONS[r.key] || '')}</span>
+      </button>
+    `,
+      )
+      .join('');
+  });
   showModal('roleModal');
 }
 

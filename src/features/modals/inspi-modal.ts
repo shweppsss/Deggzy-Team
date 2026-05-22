@@ -24,6 +24,7 @@ import { showModal, hideModal, setFieldValue } from './shared';
 import { escapeHtml } from '../../lib/format-utils';
 import { icon } from '../../lib/render-utils';
 import { parseMedia, checkFileSize, toast } from '../../lib/legacy-bridge';
+import { viewTransition } from '../mobile/transitions';
 
 let _inspiDraft: InspiDraft | null = null;
 
@@ -67,7 +68,7 @@ export function showInspiPreview(): void {
     (defaultBox as HTMLElement).hidden = false;
     return;
   }
-  previewWrap.innerHTML = buildPreviewInner(_inspiDraft);
+  viewTransition(() => { previewWrap.innerHTML = buildPreviewInner(_inspiDraft!); });
   (previewWrap as HTMLElement).hidden = false;
   (defaultBox as HTMLElement).hidden = true;
 }

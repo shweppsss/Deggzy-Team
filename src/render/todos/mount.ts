@@ -6,6 +6,7 @@
 import { getState } from '../../data';
 import type { TodoDeps, TodoEntity, TodoFilterKey, TodoModel, TodoSortKey } from './types';
 import { buildTodosView } from './composition';
+import { viewTransition } from '../../features/mobile/transitions';
 
 export interface TodosSideEffects {
   /** Attach swipe-to-delete to a row. */
@@ -52,23 +53,25 @@ export function renderTodosView(deps: TodoDeps): void {
 
   // Chips
   const filterEl = document.getElementById('todoFilter');
-  if (filterEl) filterEl.innerHTML = result.filterChipsHtml;
+  if (filterEl) viewTransition(() => { filterEl.innerHTML = result.filterChipsHtml; });
   const sortEl = document.getElementById('todoSort');
-  if (sortEl) sortEl.innerHTML = result.sortChipsHtml;
+  if (sortEl) viewTransition(() => { sortEl.innerHTML = result.sortChipsHtml; });
 
   // List body — show empty-state when the post-filter list is empty
   const listsEl = document.getElementById('todoLists');
   if (listsEl) {
     if (result.empty) {
-      listsEl.innerHTML = deps.emptyState(
-        'todos',
-        'Aucune tâche ici',
-        'Soit tout est fait, soit le filtre est trop strict. Crée-en une avec le bouton +.',
-        'Nouvelle tâche',
-        'addTodo()',
-      );
+      viewTransition(() => {
+        listsEl.innerHTML = deps.emptyState(
+          'todos',
+          'Aucune tâche ici',
+          'Soit tout est fait, soit le filtre est trop strict. Crée-en une avec le bouton +.',
+          'Nouvelle tâche',
+          'addTodo()',
+        );
+      });
     } else {
-      listsEl.innerHTML = result.listHtml;
+      viewTransition(() => { listsEl.innerHTML = result.listHtml; });
     }
   }
 

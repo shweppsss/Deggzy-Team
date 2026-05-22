@@ -54,6 +54,7 @@ import {
   type BridgedState,
   type BridgedEntity,
 } from '../../lib/legacy-bridge';
+import { viewTransition } from '../mobile/transitions';
 
 type EntityWithId = BridgedEntity;
 type StateLike = BridgedState;
@@ -207,7 +208,7 @@ export function openDetail(kind: DetailKind, id: string): void {
   if (!kindEl || !bodyEl || !overlayEl) return;
 
   kindEl.textContent = resolved.kindLabel;
-  bodyEl.innerHTML = resolved.html;
+  viewTransition(() => { bodyEl.innerHTML = resolved.html; });
   overlayEl.classList.add('open');
   document.body.style.overflow = 'hidden';
 

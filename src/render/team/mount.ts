@@ -5,6 +5,7 @@
 import { getState } from '../../data';
 import type { TeamDeps, TeamMember, TeamModel } from './types';
 import { buildTeamView } from './composition';
+import { viewTransition } from '../../features/mobile/transitions';
 
 export interface TeamSideEffects {
   attachSwipeDelete?: (el: HTMLElement, onDelete: () => void) => void;
@@ -27,7 +28,7 @@ export function renderTeamView(deps: TeamDeps): void {
   if (!grid) return;
   const model: TeamModel = { members: Array.isArray(state.team) ? state.team : [] };
   const result = buildTeamView(model, deps);
-  grid.innerHTML = result.empty ? result.emptyHtml : result.listHtml;
+  viewTransition(() => { grid.innerHTML = result.empty ? result.emptyHtml : result.listHtml; });
   if (!result.empty && _fx.attachSwipeDelete && _fx.swipeDeleteMember) {
     grid.querySelectorAll<HTMLElement>('.list-row[data-id]').forEach((el) => {
       const id = el.dataset.id;
