@@ -24,6 +24,7 @@
 // ============================================================================
 
 import type { RouteName, SectionId, RenderFn, RenderOpts } from './types';
+import { viewTransition } from '../features/mobile/transitions';
 
 // ---------------------------------------------------------------------------
 // Section registry — main.ts registers each implementation.
@@ -78,17 +79,19 @@ export function renderRoute(view: RouteName | string): void {
   if (!section) return;
   const fn = _renderers.get(section);
   if (!fn) return;
-  try {
-    fn();
-  } catch (e) {
-    console.error('[Render] route "' + view + '" → ' + section + ' failed:', e);
-  }
-  // Special case carried over from inline: profile route also runs
-  // setupProfileAliasEdit. We expose a registration point for this
-  // so dispatch.ts doesn't import a feature-specific helper.
-  if (section === 'profile' && _postRouteHooks[section]) {
-    try { _postRouteHooks[section]?.(); } catch (_e) { /* no-op */ }
-  }
+  void viewTransition(() => {
+    try {
+      fn();
+    } catch (e) {
+      console.error('[Render] route "' + view + '" → ' + section + ' failed:', e);
+    }
+    // Special case carried over from inline: profile route also runs
+    // setupProfileAliasEdit. We expose a registration point for this
+    // so dispatch.ts doesn't import a feature-specific helper.
+    if (section === 'profile' && _postRouteHooks[section]) {
+      try { _postRouteHooks[section]?.(); } catch (_e) { /* no-op */ }
+    }
+  });
 }
 
 const _postRouteHooks: Partial<Record<SectionId, () => void>> = {};
