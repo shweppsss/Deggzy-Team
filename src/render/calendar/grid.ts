@@ -24,6 +24,7 @@ import { toIsoDate, parseIsoDate, getMondayOf } from '../shared/dates';
 import { buildWeekView, type WeekViewOpts } from './week';
 import { buildMonthView, type MonthViewOpts } from './month';
 import { sweepDragGhosts } from './drag-preview';
+import { viewTransition } from '../../features/mobile/transitions';
 import type { CalendarEvent, CalendarDeps } from './types';
 
 // ---------------------------------------------------------------------------
@@ -100,8 +101,6 @@ export function renderCalendarView(deps: CalendarDeps): void {
 }
 
 function renderWeekViewInternal(grid: HTMLElement, state: RenderableState, deps: CalendarDeps, todayIso: string): void {
-  grid.className = 'cal-week';
-  grid.style.gridTemplateColumns = '';
   // Resolve current Monday
   const weekStartIso = state.calWeekStart || toIsoDate(getMondayOf(new Date()));
   const opts: WeekViewOpts = {
@@ -111,11 +110,14 @@ function renderWeekViewInternal(grid: HTMLElement, state: RenderableState, deps:
     todayIso,
   };
   const { html, headerLabel } = buildWeekView(weekStartIso, state.events || [], deps, opts);
-  // Header label
-  const headerEl = document.getElementById('calMonth');
-  if (headerEl) headerEl.textContent = headerLabel;
-  // Mount
-  grid.innerHTML = html;
+  // Mount (DOM mutations wrapped — see ADR 0005)
+  viewTransition(() => {
+    grid.className = 'cal-week';
+    grid.style.gridTemplateColumns = '';
+    const headerEl = document.getElementById('calMonth');
+    if (headerEl) headerEl.textContent = headerLabel;
+    grid.innerHTML = html;
+  });
   // Re-attach interactions for the new pills.
   if (_hooks.attachWeekInteractions) {
     try { _hooks.attachWeekInteractions(); } catch (e) { console.error('attachWeekInteractions:', e); }
@@ -131,14 +133,17 @@ function renderWeekViewInternal(grid: HTMLElement, state: RenderableState, deps:
 }
 
 function renderMonthViewInternal(grid: HTMLElement, state: RenderableState, deps: CalendarDeps, todayIso: string): void {
-  grid.className = 'calendar-grid';
   const opts: MonthViewOpts = { todayIso };
   const calMonth = state.calMonth || '';
   if (!calMonth) return;
   const { html, headerLabel } = buildMonthView(calMonth, state.events || [], deps, opts);
-  const headerEl = document.getElementById('calMonth');
-  if (headerEl) headerEl.textContent = headerLabel;
-  grid.innerHTML = html;
+  // Mount (DOM mutations wrapped — see ADR 0005)
+  viewTransition(() => {
+    grid.className = 'calendar-grid';
+    const headerEl = document.getElementById('calMonth');
+    if (headerEl) headerEl.textContent = headerLabel;
+    grid.innerHTML = html;
+  });
   if (_hooks.attachMonthInteractions) {
     try { _hooks.attachMonthInteractions(); } catch (e) { console.error('attachMonthInteractions:', e); }
   }
