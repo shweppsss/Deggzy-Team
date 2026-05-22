@@ -814,26 +814,27 @@ registerAuthLifecycleHooks({
 });
 
 // TS-11 — when the inline Supabase client (`sb`) initializes, it sets
-// `window.sb`. We poll briefly + then call setSupabaseClient(sb) and
-// attach the auth-state listener. Done as a microtask so it lands AFTER
-// the inline `initSupabase()` finishes its sync setup.
-queueMicrotask(() => {
+// `window.sb` AND dispatches a `sb-ready` CustomEvent. We listen for it
+// and (idempotently) hydrate the TS auth wrappers. A microtask check
+// covers the race where window.sb was already set before this listener
+// attached (unlikely with current boot order — inline initSupabase runs
+// from __bootDefer which fires after window.load, so the listener is
+// guaranteed to attach first; but the microtask makes the contract
+// robust under future boot-order changes).
+//
+// REPLACED the previous "queueMicrotask + 100ms retry then give up"
+// pattern, which was the silent failure that broke profile creation:
+// initSupabase() runs after __bootDefer (= after window.load), but the
+// 2 retries fired in the microtask queue + 100ms after module load —
+// both well before window.load. So neither retry ever saw window.sb.
+function _hydrateAuthClientFromWindow(): void {
   const w = window as unknown as { sb?: unknown };
-  if (w.sb) {
-    setSupabaseClient(w.sb as Parameters<typeof setSupabaseClient>[0]);
-    attachAuthStateListener();
-  } else {
-    // Late init — retry on next macrotask. The inline code creates `sb`
-    // before any UI binding; this fallback handles cold-load timing.
-    setTimeout(() => {
-      const w2 = window as unknown as { sb?: unknown };
-      if (w2.sb) {
-        setSupabaseClient(w2.sb as Parameters<typeof setSupabaseClient>[0]);
-        attachAuthStateListener();
-      }
-    }, 100);
-  }
-});
+  if (!w.sb) return;
+  setSupabaseClient(w.sb as Parameters<typeof setSupabaseClient>[0]);
+  attachAuthStateListener();
+}
+window.addEventListener('sb-ready', _hydrateAuthClientFromWindow, { once: true });
+queueMicrotask(_hydrateAuthClientFromWindow);
 
 // Bare-global re-exposure of constants + helpers.
 window.LOCAL_PIN_KEY_PREFIX = LOCAL_PIN_KEY_PREFIX;
@@ -943,9 +944,21 @@ queueMicrotask(() => {
     if (w.DEFAULTS) setWorkspaceState(hydrateStateFromLocal());
   }
   // Mirror the data client to the auth client (same Supabase instance).
+  // Same event-driven hydration as the auth client above. The initial
+  // attempt covers the case where window.sb is set synchronously before
+  // we reach this point (e.g. test harness); the event listener covers
+  // the normal cold-boot path where initSupabase() runs from __bootDefer
+  // (after window.load).
   if (w.sb) {
     setSupabaseDataClient(w.sb as Parameters<typeof setSupabaseDataClient>[0]);
     setSupabaseProfilesClient(w.sb as Parameters<typeof setSupabaseProfilesClient>[0]);
+  } else {
+    window.addEventListener('sb-ready', () => {
+      const w2 = window as unknown as { sb?: unknown };
+      if (!w2.sb) return;
+      setSupabaseDataClient(w2.sb as Parameters<typeof setSupabaseDataClient>[0]);
+      setSupabaseProfilesClient(w2.sb as Parameters<typeof setSupabaseProfilesClient>[0]);
+    }, { once: true });
   }
 });
 
