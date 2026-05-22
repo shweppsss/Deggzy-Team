@@ -112,6 +112,11 @@
     --duration-slow: 380ms;
     --transition: var(--duration-base) var(--ease-decelerate);
 
+    /* Tour 20 — viewTransition durées cibles (ADR 0006) */
+    --motion-route: 250ms;
+    --motion-modal: 150ms;
+    --motion-hero: 400ms;
+
     /* Liquid Glass — materials */
     --glass-blur: blur(40px) saturate(180%);
     --glass-blur-strong: blur(50px) saturate(180%);
@@ -2558,7 +2563,7 @@
      PAGE VIEWS
      ============================ */
   .view { display: none; }
-  .view.active { display: block; animation: fadeIn 200ms ease; }
+  .view.active { display: block; /* animation removed Tour 20 Wave 3a — viewTransition handles cross-fade (ADR 0006) */ }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
   /* Scrollbar */
@@ -2978,8 +2983,10 @@
   }
   .number-pop { animation: numberPop 600ms cubic-bezier(0.16, 1, 0.3, 1); }
 
-  /* View transition */
-  .view.active { animation: viewIn var(--duration-slow) var(--ease-decelerate); }
+  /* View transition — animation override removed Tour 20 Wave 3a.
+     viewTransition() wraps renderRoute and produces the cross-fade.
+     @keyframes viewIn kept below in case Tour 21+ wants to re-enable
+     via ::view-transition-old/new pseudo-elements. (ADR 0006) */
   @keyframes viewIn {
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
