@@ -8289,6 +8289,16 @@ function initSupabase() {
       },
       realtime: { params: { eventsPerSecond: 8 } },
     });
+    // Bridge inline `sb` → `window.sb` so the TS layer (src/main.ts +
+    // src/data/* + src/features/auth/*) can pick up the client. Without
+    // this mirror, `setSupabaseClient` / `setSupabaseDataClient` /
+    // `setSupabaseProfilesClient` are never called → profile + workspace
+    // wrappers silently return null → signup creates an auth user but no
+    // profile row, signin loads no profile, realtime channels never start.
+    // The CustomEvent unblocks main.ts's listener-based hydration (which
+    // replaced the previous poll-and-give-up pattern).
+    window.sb = sb;
+    try { window.dispatchEvent(new CustomEvent('sb-ready')); } catch (_e) { /* no CustomEvent ctor? swallow */ }
     // Auth lifecycle events — EXTRACTED in Phase TS-11 to
     // /src/features/auth/auth-state.ts. /src/main.ts attaches the typed
     // listener via `attachAuthStateListener()` once the inline Supabase
@@ -9090,6 +9100,16 @@ async function signInUser(ev) {
     clearAuthFailures(email);
     _currentUser = data.user;
     await loadProfileFromCloud();
+    // Fallback — if no profile row exists yet (e.g. legacy account created
+    // while the inline→TS bridge was broken, so signUpUser created an auth
+    // user but no profile row), recover from the auth user_metadata. Same
+    // pattern as checkAuth's session-restore branch (line ~13651).
+    if (!_currentProfile) {
+      const meta = (data.user && data.user.user_metadata) || {};
+      const fallbackName = meta.name || (data.user && data.user.email ? data.user.email.split('@')[0] : 'Sans nom');
+      const fallbackRole = meta.role || 'Autre';
+      try { await ensureProfileExists(fallbackName, fallbackRole); } catch (e) { console.warn('signIn profile recovery failed:', e); }
+    }
     await postAuthFlow();
   } catch (e) {
     recordAuthFailure(email);
@@ -9143,6 +9163,18 @@ function _showOnboardingStep(n) {
     s.classList.toggle('active', parseInt(s.dataset.step, 10) === n);
   });
   _renderOnboardingProgress();
+  // Defensive re-render — if the role grid is empty when we arrive at
+  // step 2 (e.g. the initial render at resetOnboardingState() crashed
+  // because ROLES wasn't ready, or a stale SW served an older bundle),
+  // re-attempt the render now. Idempotent: if already populated this
+  // overwrites with the same content. Without this guard, users see an
+  // empty grid + can't pick a role + are stuck at step 2.
+  if (n === 2) {
+    const _grid = document.getElementById('signUpRoleGrid');
+    if (_grid && _grid.children.length === 0 && typeof _renderOnboardingRoleGrid === 'function') {
+      try { _renderOnboardingRoleGrid(); } catch (e) { console.warn('[Onboarding] role grid re-render failed:', e); }
+    }
+  }
   if (n === 4) _renderOnboardingRecap();
   // Focus the first input of the step for keyboard flow
   setTimeout(() => {
