@@ -10480,6 +10480,15 @@ const DEFAULTS = {
 
 };
 
+// Bridge the inline DEFAULTS → window so the TS data layer picks it up.
+// Without this, main.ts's `if (w.DEFAULTS) setWorkspaceDefaults(...)` never
+// fires → the data layer's `_defaults` stays `{}` → hydrate/loadWorkspace
+// merge cloud onto an EMPTY base → the app runs on a near-empty state (no
+// album tracks, no release calendar, no default todos) AND state.tracks/
+// state.todos/etc. are `undefined`, so any add throws. Same class of bug as
+// the inline `sb` that wasn't mirrored to `window.sb`.
+window.DEFAULTS = DEFAULTS;
+
 // `state` — EXTRACTED in Phase TS-12 to /src/data/workspace.ts. The
 // in-memory workspace state lives there now; /src/main.ts mirrors it
 // via `Object.defineProperty(window, 'state', { get, set })` so legacy
