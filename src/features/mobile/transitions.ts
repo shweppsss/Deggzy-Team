@@ -10,8 +10,17 @@
 // straight callback call.
 // ============================================================================
 
+// A ViewTransition exposes three promises. `finished` is the one callers
+// await; `ready` and `updateCallbackDone` are lifecycle promises that REJECT
+// when a transition is interrupted (a new startViewTransition() supersedes it).
+// We type them optional so older engines / partial polyfills still satisfy it.
+type ViewTransitionLike = {
+  finished: Promise<void>;
+  ready?: Promise<void>;
+  updateCallbackDone?: Promise<void>;
+};
 type DocWithTransitions = Document & {
-  startViewTransition?: (cb: () => void) => { finished: Promise<void> };
+  startViewTransition?: (cb: () => void) => ViewTransitionLike;
 };
 
 let _enabled = true;
@@ -47,7 +56,17 @@ export function viewTransition(swap: () => void): Promise<void> {
   }
   try {
     const t = doc.startViewTransition(() => { swap(); });
-    return t.finished.catch(() => { /* aborted is fine */ });
+    // Swallow ALL three transition promises, not just `finished`. At cold
+    // boot ~30 innerHTML swaps fire in cascade; each new startViewTransition()
+    // interrupts the previous one, whose `ready` (and sometimes
+    // `updateCallbackDone`) then REJECT with AbortError/InvalidStateError.
+    // Awaiting only `finished` left those as ~184 unhandled promise rejections
+    // per boot (console noise + Sentry-storm risk). An interrupted transition
+    // is an expected outcome — the latest swap is meant to win — so these
+    // rejections are informational, not errors.
+    if (t.ready && typeof t.ready.catch === 'function') t.ready.catch(() => { /* superseded transition — expected */ });
+    if (t.updateCallbackDone && typeof t.updateCallbackDone.catch === 'function') t.updateCallbackDone.catch(() => { /* swap already ran synchronously */ });
+    return t.finished.catch(() => { /* aborted / skipped is fine */ });
   } catch (e) {
     console.warn('[mobile/transitions] startViewTransition threw:', e);
     try { swap(); } catch { /* ignore */ }
