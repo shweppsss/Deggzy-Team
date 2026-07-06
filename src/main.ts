@@ -438,13 +438,19 @@ import {
   buildTrackAudioInitialHTML as pillBuildInitialHTML,
   buildTrackAudioPillHTML as pillBuildPillHTML,
   syncAllPills as pillSyncAllPills,
+  initPillSeek,
   formatAudioTime as pillFormatAudioTime,
   PLAY_ICON_SVG as PILL_PLAY_ICON_SVG,
   PAUSE_ICON_SVG as PILL_PAUSE_ICON_SVG,
 } from './features/audio/pill';
+import { seekToRatio as playerSeekToRatio } from './features/audio/player';
 // Subscribe the TS-side reconciler to the store. Fires once synchronously
 // with the current state, then on every change.
 audioSubscribeAudio((s) => pillSyncAllPills(s));
+// Wire click-to-seek on the catalogue/detail pills' progress bars. Same
+// seekToRatio the MiniPlayer scrubber uses; the bars used to be inert
+// (cursor:pointer but no handler), so users couldn't scrub a playing track.
+initPillSeek({ getAudioState: audioGetAudioState, seekToRatio: playerSeekToRatio });
 // Re-attach pill builders on window for the inline trackAudioInitialHTML
 // + _trackAudioPillHTML call sites (catalogue audio slot + detail). The
 // builders read the live store, so HTML rendered at any time is correct.

@@ -12,3 +12,4 @@ export { PLAY_ICON_SVG, PAUSE_ICON_SVG } from './icons';
 export { formatAudioTime } from './format';
 export { buildTrackAudioPillHTML, buildTrackAudioInitialHTML } from './html';
 export { syncAllPills } from './sync';
+export { initPillSeek, _resetPillSeek, type PillSeekDeps } from './seek';
