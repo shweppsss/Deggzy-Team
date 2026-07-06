@@ -15,7 +15,7 @@
 // The activate event prunes old cache buckets.
 // ============================================================================
 
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4';
 const SHELL_CACHE = `deggzy-shell-${CACHE_VERSION}`;
 
 // Paths relative to the SW scope (GitHub Pages serves under /Deggzy-Team/).
