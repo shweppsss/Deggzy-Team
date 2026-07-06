@@ -930,13 +930,27 @@
     height: 4px;
     background: var(--glass-edge-standard);
     border-radius: 2px;
-    overflow: hidden;
     cursor: pointer;
+    position: relative; /* anchor the touch-target overlay */
+  }
+  /* Expand the tap target to ~30px tall without changing the 4px visual bar.
+     A 4px line is far too thin to hit reliably on touch; this transparent
+     ::after overlays the bar and extends above/below it. Clicks on it target
+     .track-audio-progress (pseudo-elements forward hits to the host), so the
+     seek handler + getBoundingClientRect math are unaffected. */
+  .track-audio-progress::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -13px;
+    bottom: -13px;
   }
   .track-audio-progress-fill {
     height: 100%;
     width: 0%;
     background: var(--text);
+    border-radius: 2px; /* self-round; replaces the removed parent overflow:hidden clip */
     transition: width 120ms linear;
   }
   .track-audio-time {
