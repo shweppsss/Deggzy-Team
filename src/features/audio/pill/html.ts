@@ -43,14 +43,21 @@ export function buildTrackAudioPillHTML(
   if (isActive && state.duration > 0) {
     fillPct = (state.currentTime / state.duration) * 100;
   }
-  const timeLabel = isActive && state.duration > 0
+  // The right-hand time reflects the CURRENT position while this track is
+  // active (so playing/scrubbing shows "what minute we're at"), and the total
+  // duration otherwise. `data-total` stashes the total so the sync reconciler
+  // can restore it when the track stops being the active one.
+  const totalLabel = isActive && state.duration > 0
     ? formatAudioTime(state.duration)
     : (durationLabel || '0:00');
+  const shownLabel = isActive && state.duration > 0
+    ? formatAudioTime(state.currentTime)
+    : totalLabel;
   return `
     <div class="track-audio" data-track-id="${escapeHtml(t.id)}">
       <button class="track-audio-play" type="button" aria-label="Lecture / pause" onclick="playTrackInMini('${escapeHtml(t.id)}')"${stateAttr}>${iconHTML}</button>
       <div class="track-audio-progress"><div class="track-audio-progress-fill" style="width:${fillPct.toFixed(2)}%"></div></div>
-      <span class="track-audio-time">${timeLabel}</span>
+      <span class="track-audio-time" data-total="${escapeHtml(totalLabel)}">${shownLabel}</span>
     </div>
   `;
 }
