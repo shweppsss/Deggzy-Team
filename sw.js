@@ -15,8 +15,8 @@
  * caches dont le nom ne matche pas EXACTEMENT CACHE_VERSION ou RUNTIME_CACHE.
  * ============================================================================= */
 
-const CACHE_VERSION = 'noname-20260522-2';
-const RUNTIME_CACHE = 'noname-runtime-20260522-2';
+const CACHE_VERSION = 'noname-20260706-1';
+const RUNTIME_CACHE = 'noname-runtime-20260706-1';
 
 // Ressources mises en cache au moment de l'install. Garde la liste minimale :
 // l'app est mono-fichier, donc index.html + manifest + icônes suffisent.
