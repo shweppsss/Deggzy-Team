@@ -779,6 +779,13 @@ wireAuthHooks({
 // reload, profile hydration, post-auth UI flow).
 registerAuthLifecycleHooks({
   cleanupRealtimeChannels: () => {
+    // TS Realtime-1 teardown (presence poll + broadcast channel + activity
+    // feed). `_teardownRealtime` is a hoisted function declaration defined
+    // alongside the realtime boot code below — safe to call from this closure
+    // because the closure only runs at logout, long after module init. Without
+    // it, the feed + presence poll leak across logout and `_realtimeBooted`
+    // stays true, so a second login never re-subscribes (see its docblock).
+    _teardownRealtime();
     const w = window as unknown as {
       _realtimeChannel?: unknown;
       _activityChannel?: unknown;
@@ -1061,6 +1068,7 @@ import {
   getOnlineCount as rtOnlineCount,
   type RealtimeChannel,
   type PresenceUser,
+  type RealtimeHandle,
 } from './features/realtime';
 
 type RealtimeLegacyGlobals = {
@@ -1072,13 +1080,14 @@ type RealtimeLegacyGlobals = {
 };
 
 let _realtimeBooted = false;
+let _realtimeHandle: RealtimeHandle | null = null;
 function _bootRealtimeOnce(): void {
   if (_realtimeBooted) return;
   const w = window as unknown as RealtimeLegacyGlobals;
   if (!w.sb || typeof w.sb.channel !== 'function') return;
   if (!w._currentUser || !w._currentUser.id) return;
   _realtimeBooted = true;
-  registerRealtime({
+  _realtimeHandle = registerRealtime({
     createChannel: (name, opts) => w.sb!.channel(name, opts),
     getActor: () => {
       const u = (window as unknown as RealtimeLegacyGlobals)._currentUser;
@@ -1095,6 +1104,28 @@ function _bootRealtimeOnce(): void {
       if (typeof ww.toast === 'function') ww.toast(msg);
     },
   });
+}
+
+/**
+ * Tear down the TS Realtime-1 stack (presence poll + broadcast channel +
+ * activity feed subscription) and reset the boot flag so the next login
+ * re-subscribes from scratch. Invoked from the auth `cleanupRealtimeChannels`
+ * lifecycle hook, which fires on `signOutUserOrchestrated` AND on the Supabase
+ * SIGNED_OUT event — idempotent via the null-guard, so a double fire is safe.
+ *
+ * WHY THIS EXISTS (bug C2): `registerRealtime()` returns a teardown handle
+ * that used to be discarded. On logout the presence 2s poll + the broadcast
+ * channel + the feed subscription leaked, and `_realtimeBooted` stayed true —
+ * so a second login on the same page never re-subscribed and the activity
+ * feed was dead until a hard reload. Storing + calling the handle, then
+ * clearing the flag, fixes the leak AND the re-subscribe.
+ */
+function _teardownRealtime(): void {
+  if (_realtimeHandle) {
+    try { _realtimeHandle.stop(); } catch (_e) { /* never let teardown throw */ }
+    _realtimeHandle = null;
+  }
+  _realtimeBooted = false;
 }
 // Try to boot on every save (which fires after auth + workspace load). Cheap
 // no-op once booted.

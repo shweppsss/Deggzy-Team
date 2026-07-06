@@ -30,9 +30,13 @@ export function startActivityFeed(maxEvents: number = DEFAULT_MAX): void {
   });
 }
 
-/** Stop the feed + release the broadcast subscription. */
+/** Stop the feed + release the broadcast subscription. Also clears the
+ *  buffered events: the only non-test caller is logout teardown, and a
+ *  residual buffer would leak the previous user's activity into the next
+ *  session on a shared device. */
 export function stopActivityFeed(): void {
   if (_unsubscribe) { _unsubscribe(); _unsubscribe = null; }
+  _events = [];
 }
 
 /** Read the current event list (most-recent-first). */
