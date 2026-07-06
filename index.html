@@ -3654,7 +3654,18 @@
     background: rgba(10, 10, 10, 0.85);
     box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.14);
   }
-  .auth-field input:invalid:not(:focus):not(:placeholder-shown) {
+  /* Invalid-field styling gated on :user-invalid, NOT :invalid — so a
+     freshly-loaded form never paints red on empty required fields the user
+     hasn't touched yet. :user-invalid only matches AFTER interaction (edit
+     +blur, or a submit attempt). This replaces the previous
+     `:invalid:not(:placeholder-shown)` rule, whose placeholder-shown guard
+     only suppressed the red for fields that HAD a placeholder — the signup
+     password + confirm inputs have none, so they lit up red at cold boot.
+     :not(:focus) keeps the border calm while the user is actively fixing it.
+     Older engines without :user-invalid (pre-2023) drop this rule entirely
+     → no red styling, which is a safe degradation (JS validation + toasts
+     still catch everything). */
+  .auth-field input:user-invalid:not(:focus) {
     border-color: rgba(255, 69, 58, 0.5);
   }
   .auth-roles {
